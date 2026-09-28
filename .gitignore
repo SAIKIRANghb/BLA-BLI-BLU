@@ -1,0 +1,31 @@
+# ── toolchain dumped into the repo (Flutter SDK, scraped catalogue JSON) ─────
+# The SDK lives at _scratch/flutter so the project is self-contained; it is
+# ~1 GB and must never be committed. Same for the scraped source data.
+_scratch/
+
+# ── Node backend ─────────────────────────────────────────────────────────────
+backend/node_modules/
+backend/.env
+npm-debug.log*
+
+# ── Flutter / Dart ───────────────────────────────────────────────────────────
+mobile/.dart_tool/
+mobile/build/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/.packages
+mobile/.idea/
+mobile/*.iml
+mobile/doc/api/
+mobile/**/GeneratedPluginRegistrant.*
+
+# Coverage / test artefacts
+coverage/
+*.lcov
+
+# ── OS / editor noise ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/

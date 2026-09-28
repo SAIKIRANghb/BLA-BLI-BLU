@@ -1,0 +1,39 @@
+/// Global application configuration.
+///
+/// [kUseLocalSeed] is the single switch for local testing:
+///  * `true`  -> every API call is served from `assets/seed/seed.json`
+///               (offline UI testing, widget tests, screenshots - no backend).
+///               The seed implementation still exposes the exact same public
+///               API surface, so nothing else in the app changes.
+///  * `false` -> real HTTP calls against [kApiBaseUrl].
+library;
+
+import 'package:flutter/material.dart';
+
+/// ── TEST SWITCH ─────────────────────────────────────────────────────────────
+/// Keep `true` while testing the UI without a running backend.
+/// Set to `false` to talk to the Node.js/PostgreSQL API.
+const bool kUseLocalSeed = true;
+
+/// ── API endpoint ────────────────────────────────────────────────────────────
+/// * Android emulator -> `10.0.2.2` is the host machine loopback
+/// * iOS simulator     -> `localhost` / `127.0.0.1`
+/// * Physical device   -> your machine's LAN IP, e.g. `192.168.1.10:4000`
+const String kApiHost = 'http://10.0.2.2:4000';
+const String kApiBaseUrl = '$kApiHost/api';
+
+/// Seed asset used when [kUseLocalSeed] is enabled.
+const String kSeedAsset = 'assets/seed/seed.json';
+
+/// Brand palette (matches blabliblulife.com).
+abstract final class AppColors {
+  static const primary = Color(0xFFD8232A);
+  static const primaryDark = Color(0xFF9E1219);
+  static const ink = Color(0xFF141414);
+  static const muted = Color(0xFF6B6B6B);
+  static const line = Color(0xFFE6E6E6);
+  static const surface = Color(0xFFFFFFFF);
+  static const background = Color(0xFFF7F7F7);
+  static const success = Color(0xFF1E8E3E);
+  static const star = Color(0xFFF5A623);
+}
