@@ -2,7 +2,7 @@
 /// full-screen routes pushed on top of it (product, checkout, orders, auth...).
 ///
 /// `refreshListenable` is bridged from the store so redirects (sign-in guard,
-/// cart badge) react to state changes without a global navigator key hack.
+/// cart count) react to state changes without a global navigator key hack.
 library;
 
 import 'package:flutter/foundation.dart';
@@ -35,7 +35,7 @@ final _rootKey = GlobalKey<NavigatorState>();
 
 /// Listens to the store and tells go_router to re-evaluate redirects.
 ///
-/// Only meaningful changes trigger a refresh (auth flips, cart badge, tab) so
+/// Only meaningful changes trigger a refresh (auth flips, cart count, tab) so
 /// a barrage of catalogue updates does not churn the router.
 class _StoreRouterRefresh extends ChangeNotifier {
   _StoreRouterRefresh(Ref ref) {

@@ -57,7 +57,7 @@ class _ProductScreenState extends ConsumerState<ProductScreen> {
     if (detail == null) {
       return Scaffold(
         backgroundColor: AppColors.surface,
-        appBar: AppBar(backgroundColor: AppColors.surface),
+        appBar: AppBar(backgroundColor: AppColors.surface, actions: const [CartIconButton(), SizedBox(width: 8)]),
         body: detailRes == null || detailRes.showSkeleton
             ? const SingleChildScrollView(child: _DetailSkeleton())
             : ErrorRetry(
@@ -190,6 +190,7 @@ class _GalleryAppBar extends StatelessWidget {
           ? Text('${index + 1} / ${images.length}', style: const TextStyle(fontSize: 14, color: AppColors.muted))
           : null,
       actions: [
+        const CartIconButton(),
         IconButton(icon: const Icon(Icons.ios_share_rounded, size: 20), onPressed: onShare),
         const SizedBox(width: 4),
       ],

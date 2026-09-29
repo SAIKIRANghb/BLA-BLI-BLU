@@ -3,11 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/config/app_config.dart';
+import '../shared/widgets/cart_icon_button.dart';
 import '../state/store.dart';
 
 /// Bottom-navigation shell hosting the five primary tabs.
 ///
-/// The cart tab shows a live badge fed straight from the store's cart slice.
+/// The Bag tab shows the live cart count printed onto its icon, fed straight
+/// from the store's cart slice.
 class AppShell extends ConsumerWidget {
   const AppShell({super.key, required this.shell});
 
@@ -29,7 +31,7 @@ class AppShell extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final badge = ref.watch(storeProvider.select((s) => s.cart.itemCount));
+    final cartCount = ref.watch(storeProvider.select((s) => s.cart.itemCount));
 
     return Scaffold(
       body: shell,
@@ -47,18 +49,15 @@ class AppShell extends ConsumerWidget {
           destinations: [
             for (var i = 0; i < destinations.length; i++)
               NavigationDestination(
-                // The Bag tab wears the live cart count as a pill badge (the
-                // label stays a constant "Bag" so it never jitters).
-                icon: Badge(
-                  isLabelVisible: i == 3 && badge > 0,
-                  label: Text(badge > 99 ? '99+' : '$badge'),
-                  child: Icon(destinations[i].icon, color: _color(i, shell.currentIndex)),
-                ),
-                selectedIcon: Badge(
-                  isLabelVisible: i == 3 && badge > 0,
-                  label: Text(badge > 99 ? '99+' : '$badge'),
-                  child: Icon(destinations[i].selectedIcon, color: _color(i, shell.currentIndex)),
-                ),
+                // The Bag tab carries the live cart count as a bare number
+                // riding on the icon itself (no pill); the label stays a
+                // constant "Bag" so it never jitters.
+                icon: i == 3
+                    ? CountOnIcon(count: cartCount, child: Icon(destinations[i].icon, color: _color(i, shell.currentIndex)))
+                    : Icon(destinations[i].icon, color: _color(i, shell.currentIndex)),
+                selectedIcon: i == 3
+                    ? CountOnIcon(count: cartCount, child: Icon(destinations[i].selectedIcon, color: _color(i, shell.currentIndex)))
+                    : Icon(destinations[i].selectedIcon, color: _color(i, shell.currentIndex)),
                 label: destinations[i].label,
               ),
           ],

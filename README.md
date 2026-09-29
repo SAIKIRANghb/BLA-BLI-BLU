@@ -110,7 +110,8 @@ flutter pub get
 flutter run                   # device/emulator
 flutter analyze --no-pub      # 0 issues
 flutter test --no-pub         # models, reducer, CachedImage, links/routing,
-                              # pagination, hero autoplay, cart badge, layout smoke
+                              # pagination, hero autoplay, cart count (bar +
+                              # bag tab + add-to-bag), layout smoke
 flutter build web --release --no-pub
 ```
 

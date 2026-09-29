@@ -6,7 +6,9 @@ import '../../state/store.dart';
 
 /// Bridges the store's `ui.toast` slot to a SnackBar.
 ///
-/// Mounted once around the router; the toast is cleared after display so the
+/// Mounted once around the router via `MaterialApp.builder` - the only spot
+/// that has a `ScaffoldMessenger` ancestor (it is inserted by the builder's
+/// caller, just above this widget). The toast is cleared after display so the
 /// same message never re-fires on rebuild.
 class ToastListener extends ConsumerStatefulWidget {
   const ToastListener({super.key, required this.child});

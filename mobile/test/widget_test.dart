@@ -87,19 +87,20 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
     }
 
-    // Empty bag: no pill yet on either surface, but the header action is there.
+    // Empty bag: no number yet on either surface, but the header action is there.
     expect(find.descendant(of: find.byType(NavigationBar), matching: find.text('3')), findsNothing);
     expect(find.descendant(of: find.byType(HomeScreen), matching: find.text('3')), findsNothing);
     expect(find.descendant(of: find.byType(HomeScreen), matching: find.byIcon(Icons.shopping_bag_outlined)), findsOneWidget);
 
-    // A cart landing in the store repaints both badges without a rebuild hack.
+    // A cart landing in the store repaints both counts without a rebuild hack.
     final container = ProviderScope.containerOf(tester.element(find.byType(NavigationBar)));
     container.read(storeProvider.notifier).dispatch(
           const CartLoadSucceeded(Cart(id: 'c1', itemCount: 3, subtotal: 69500, totals: CartTotals(total: 69500))),
         );
     await tester.pump();
 
-    // 1. the Bag tab in the bottom bar wears a pill badge...
+    // 1. the Bag tab in the bottom bar carries the bare number on its icon...
+    expect(find.descendant(of: find.byType(NavigationBar), matching: find.byType(CountOnIcon)), findsWidgets);
     expect(find.descendant(of: find.byType(NavigationBar), matching: find.text('3')), findsWidgets);
     // 2. ...and so does the cart action in the top app bar.
     expect(find.descendant(of: find.byType(HomeScreen), matching: find.text('3')), findsWidgets);
