@@ -172,6 +172,48 @@ AppState rootReducer(AppState state, AppAction action) {
         orders: state.orders.copyWith(addresses: state.orders.addresses.toError(message)),
       ),
 
+    // ── routing (OSRM) ─────────────────────────────────────────────────────
+    EtaLoadRequested() => state.copyWith(
+        routing: state.routing.copyWith(eta: const Resource<EtaEstimate>().toLoading()),
+      ),
+    EtaLoadSucceeded(:final estimate) => state.copyWith(
+        routing: state.routing.copyWith(eta: Resource<EtaEstimate>.seeded(estimate)),
+      ),
+    EtaLoadFailed(:final message) => state.copyWith(
+        routing: state.routing.copyWith(eta: state.routing.eta.toError(message)),
+      ),
+    RouteLoadRequested() => state.copyWith(
+        routing: state.routing.copyWith(
+          route: const Resource<RouteResult>().toLoading(),
+          match: const Resource<MatchResult>(),
+          clearRider: true,
+          progress: 0.0,
+        ),
+      ),
+    RouteLoadSucceeded(:final result) => state.copyWith(
+        routing: state.routing.copyWith(route: Resource<RouteResult>.seeded(result)),
+      ),
+    RouteLoadFailed(:final message) => state.copyWith(
+        routing: state.routing.copyWith(route: state.routing.route.toError(message)),
+      ),
+    MatchSucceeded(:final result) => state.copyWith(
+        routing: state.routing.copyWith(match: Resource<MatchResult>.seeded(result)),
+      ),
+    MatchFailed(:final message) => state.copyWith(
+        routing: state.routing.copyWith(match: state.routing.match.toError(message)),
+      ),
+    RiderAdvanced(:final at, :final progress) => state.copyWith(
+        routing: state.routing.copyWith(rider: at, progress: progress),
+      ),
+    TrackingReset() => state.copyWith(
+        routing: state.routing.copyWith(
+          route: const Resource<RouteResult>(),
+          match: const Resource<MatchResult>(),
+          clearRider: true,
+          progress: 0.0,
+        ),
+      ),
+
     // ── UI ────────────────────────────────────────────────────────────────
     SearchQueryChanged(:final query) => state.copyWith(ui: state.ui.copyWith(searchQuery: query)),
     ToastShown(:final message, :final error) =>

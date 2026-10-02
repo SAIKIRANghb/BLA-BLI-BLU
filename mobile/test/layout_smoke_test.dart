@@ -29,7 +29,9 @@ void main() {
     '/track': 'track',
     '/orders': 'orders',
     '/order/TST-1001': 'order-detail',
+    '/order/TST-1001/live': 'delivery-map',
     '/addresses': 'addresses',
+    '/addresses/pick': 'address-picker-redirect',
     '/route-that-does-not-exist': 'not-found',
   };
 

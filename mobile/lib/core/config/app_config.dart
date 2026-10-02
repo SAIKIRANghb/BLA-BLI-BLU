@@ -25,6 +25,23 @@ const String kApiBaseUrl = '$kApiHost/api';
 /// Seed asset used when [kUseLocalSeed] is enabled.
 const String kSeedAsset = 'assets/seed/seed.json';
 
+/// ── MAP / ROUTING ───────────────────────────────────────────────────────────
+/// OpenStreetMap raster tiles. `flutter_map` needs a user-agent package name
+/// that identifies the app per OSM tile usage policy.
+const String kOsmTileUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const String kOsmUserAgent = 'com.blabliblu.app';
+const String kOsmAttribution = '© OpenStreetMap contributors';
+
+/// Fallback map centre while no pin exists yet (Connaught Place, New Delhi).
+const double kMapDefaultLat = 28.6139;
+const double kMapDefaultLng = 77.2090;
+
+/// Fulfilment hubs the delivery estimate chooses from (Delhi NCR first).
+const List<({String name, double lat, double lng})> kWarehouses = [
+  (name: 'Okhla Phase 2 Hub', lat: 28.5355, lng: 77.2710),
+  (name: 'Rohini Hub', lat: 28.7495, lng: 77.0565),
+];
+
 /// Brand palette (matches blabliblulife.com).
 abstract final class AppColors {
   static const primary = Color(0xFFD8232A);

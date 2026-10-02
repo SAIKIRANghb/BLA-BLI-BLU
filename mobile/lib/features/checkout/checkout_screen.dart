@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../../core/config/app_config.dart';
 import '../../core/models/models.dart';
@@ -35,6 +36,9 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
   String _payment = 'cod';
   bool _savingAddress = false;
 
+  /// Pin dropped on the inline "new address" form via the map picker.
+  LatLng? _inlinePin;
+
   @override
   void initState() {
     super.initState();
@@ -56,6 +60,17 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
   Address? _selected(List<Address> addresses) =>
       addresses.cast<Address?>().firstWhere((a) => a?.id == _addressId, orElse: () => null);
 
+  /// Pin of [address] when it carries one (the saved WGS84 pair).
+  LatLng? _pinOf(Address? address) =>
+      address != null && address.hasPin ? LatLng(address.lat!, address.lng!) : null;
+
+  /// Opens the shared map picker and keeps the returned pin for the inline form.
+  Future<void> _pickInlinePin() async {
+    final pin = await context.push<LatLng>('/addresses/pick', extra: _inlinePin);
+    if (pin == null || !mounted) return;
+    setState(() => _inlinePin = pin);
+  }
+
   @override
   Widget build(BuildContext context) {
     final cart = ref.watch(storeProvider.select((s) => s.cart.cart.value));
@@ -71,6 +86,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
       _addressId = (addresses.firstWhere((a) => a.isDefault, orElse: () => addresses.first)).id;
     }
     final selected = _selected(addresses);
+    // Delivery target pin: saved address pin, or the inline form's dropped pin.
+    final pin = _addressId == null ? _inlinePin : _pinOf(selected);
 
     if (cart == null || cart.items.isEmpty) {
       return Scaffold(
@@ -104,6 +121,10 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
                       onSelect: (id) => setState(() => _addressId = id),
                       onEdit: () => context.push('/addresses'),
                     ),
+            ),
+            _SectionCard(
+              title: 'Delivery estimate',
+              child: _EtaCard(pin: pin),
             ),
             _SectionCard(
               title: 'Payment method',
@@ -201,6 +222,8 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
         'state': _state.text.trim(),
         'pincode': _pincode.text.trim(),
         'phone': _phone.text.trim(),
+        'lat': _inlinePin?.latitude,
+        'lng': _inlinePin?.longitude,
       });
       setState(() => _savingAddress = false);
       if (saved == null) return;
@@ -245,6 +268,14 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen> {
           if (!RegExp(r'^\d{6}$').hasMatch((v ?? '').trim())) return '6 digits';
           return null;
         }),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: OutlinedButton.icon(
+            onPressed: _pickInlinePin,
+            icon: Icon(_inlinePin == null ? Icons.map_outlined : Icons.check_circle_outline, size: 18),
+            label: Text(_inlinePin == null ? 'Pick delivery location on map' : 'Pin set - change on map'),
+          ),
+        ),
         if (_savingAddress)
           const Padding(
             padding: EdgeInsets.only(top: 8),
@@ -447,5 +478,105 @@ class _PayOption extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// OSRM Table-backed delivery estimate for the checkout's target pin.
+///
+/// Watches `state.routing.eta` and re-requests whenever [pin] changes:
+/// * no pin      -> nudges the user to drop one,
+/// * failure     -> muted inline note (a background read never toasts),
+/// * stale-safe  -> a still-loading slot hides the previous pin's estimate,
+/// * value       -> "Delivers in ~X min" + serving hub + distance,
+/// * pending     -> skeleton.
+class _EtaCard extends ConsumerStatefulWidget {
+  const _EtaCard({this.pin});
+
+  final LatLng? pin;
+
+  @override
+  ConsumerState<_EtaCard> createState() => _EtaCardState();
+}
+
+class _EtaCardState extends ConsumerState<_EtaCard> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  void didUpdateWidget(covariant _EtaCard old) {
+    super.didUpdateWidget(old);
+    if (old.pin != widget.pin) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+    }
+  }
+
+  void _load() {
+    final pin = widget.pin;
+    if (pin != null && mounted) ref.read(storeProvider.notifier).loadEta(pin);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final eta = ref.watch(storeProvider.select((s) => s.routing.eta));
+
+    if (widget.pin == null) {
+      return const Row(
+        children: [
+          Icon(Icons.info_outline_rounded, size: 16, color: AppColors.muted),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Drop a map pin to see the delivery time.',
+              style: TextStyle(fontSize: 12.5, color: AppColors.muted),
+            ),
+          ),
+        ],
+      );
+    }
+    if (eta.isError) {
+      return Row(
+        children: [
+          const Icon(Icons.error_outline_rounded, size: 16, color: AppColors.muted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              eta.error ?? 'Delivery estimate unavailable',
+              style: const TextStyle(fontSize: 12.5, color: AppColors.muted),
+            ),
+          ),
+        ],
+      );
+    }
+    final value = eta.value;
+    if (value != null && !eta.isLoading) {
+      return Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: AppColors.success.withValues(alpha: 0.08),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.local_shipping_outlined, size: 18, color: AppColors.success),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Delivers in ~${value.durationLabel}', style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w800)),
+                const SizedBox(height: 1),
+                Text('${value.warehouse} · ${value.distanceLabel}', style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+    return const SkeletonBox(width: double.infinity, height: 16);
   }
 }

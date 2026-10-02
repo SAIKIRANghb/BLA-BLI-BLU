@@ -48,6 +48,12 @@ export function loadEnv(source = process.env) {
       shippingFeePaise: int(source.SHIPPING_FEE_PAISE, 4900),
       codAvailable: bool(source.COD_AVAILABLE, true),
     },
+    routing: {
+      // OSRM route service - see infra/osrm/ for the WSL/Docker setup.
+      osrmUrl: (source.OSRM_URL ?? 'http://127.0.0.1:5000').replace(/\/+$/, ''),
+      profile: source.OSRM_PROFILE ?? 'driving',
+      timeoutMs: int(source.OSRM_TIMEOUT_MS, 8000),
+    },
   };
   return Object.freeze(env);
 }

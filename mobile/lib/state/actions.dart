@@ -9,6 +9,8 @@
 /// deterministic and trivially unit-testable.
 library;
 
+import 'package:latlong2/latlong.dart';
+
 import '../core/models/models.dart';
 
 sealed class AppAction {
@@ -236,6 +238,58 @@ class AddressesLoadSucceeded extends AppAction {
 class AddressesLoadFailed extends AppAction {
   const AddressesLoadFailed(this.message);
   final String message;
+}
+
+// ──────────────────────────────────── routing ─────────────────────────────────
+
+class EtaLoadRequested extends AppAction {
+  const EtaLoadRequested();
+}
+
+class EtaLoadSucceeded extends AppAction {
+  const EtaLoadSucceeded(this.estimate);
+  final EtaEstimate estimate;
+}
+
+class EtaLoadFailed extends AppAction {
+  const EtaLoadFailed(this.message);
+  final String message;
+}
+
+class RouteLoadRequested extends AppAction {
+  const RouteLoadRequested();
+}
+
+class RouteLoadSucceeded extends AppAction {
+  const RouteLoadSucceeded(this.result);
+  final RouteResult result;
+}
+
+class RouteLoadFailed extends AppAction {
+  const RouteLoadFailed(this.message);
+  final String message;
+}
+
+class MatchSucceeded extends AppAction {
+  const MatchSucceeded(this.result);
+  final MatchResult result;
+}
+
+class MatchFailed extends AppAction {
+  const MatchFailed(this.message);
+  final String message;
+}
+
+/// One tick of the rider simulation along the loaded route.
+class RiderAdvanced extends AppAction {
+  const RiderAdvanced(this.at, this.progress);
+  final LatLng at;
+  final double progress;
+}
+
+/// Clears route/match/rider when the tracking screen goes away.
+class TrackingReset extends AppAction {
+  const TrackingReset();
 }
 
 // ───────────────────────────────────── UI ────────────────────────────────────

@@ -7,6 +7,7 @@
 library;
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/config/app_config.dart';
@@ -434,6 +435,106 @@ class Store extends Notifier<AppState> {
       _toast(_message(err), error: true);
     }
   }
+
+  // ── routing (OSM / OSRM) ───────────────────────────────────────────────────
+
+  /// Road-snaps a dropped pin (Nearest). Return-only thunk: the picker screen
+  /// owns the transient result, and a failed snap silently falls back to the
+  /// raw coordinate - panning must never spam toasts.
+  Future<NearestResult?> snapToRoad(LatLng point) async {
+    try {
+      return await api.nearest(lat: point.latitude, lng: point.longitude);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Serving hub for [destination]: one OSRM Table over every warehouse,
+  /// shortest road time wins. Shared by the checkout ETA and the tracking
+  /// route so both screens always agree on the origin. `null` = unreachable.
+  Future<({int index, double duration, double distance})?> _bestWarehouse(LatLng destination) async {
+    final points = <LatLng>[
+      for (final w in kWarehouses) LatLng(w.lat, w.lng),
+      destination,
+    ];
+    final last = kWarehouses.length;
+    final table = await api.table(
+      points,
+      sources: [for (var i = 0; i < last; i++) i],
+      destinations: [last],
+    );
+    var best = -1;
+    double? bestSeconds;
+    for (var i = 0; i < last && i < table.durations.length; i++) {
+      final row = table.durations[i];
+      final seconds = row.isEmpty ? null : row.first;
+      if (seconds != null && (bestSeconds == null || seconds < bestSeconds)) {
+        bestSeconds = seconds;
+        best = i;
+      }
+    }
+    if (best < 0 || bestSeconds == null) return null;
+    final row = best < table.distances.length ? table.distances[best] : const <double?>[];
+    return (index: best, duration: bestSeconds, distance: row.isEmpty ? 0.0 : (row.first ?? 0.0));
+  }
+
+  /// Checkout ETA: best warehouse -> address pin, as an [EtaEstimate] (Table).
+  Future<void> loadEta(LatLng destination) async {
+    dispatch(const EtaLoadRequested());
+    try {
+      final best = await _bestWarehouse(destination);
+      if (best == null) {
+        dispatch(const EtaLoadFailed('No warehouse can reach that address'));
+        return;
+      }
+      dispatch(EtaLoadSucceeded(EtaEstimate(
+        warehouse: kWarehouses[best.index].name,
+        distance: best.distance,
+        duration: best.duration,
+      )));
+    } catch (err) {
+      dispatch(EtaLoadFailed(_message(err)));
+    }
+  }
+
+  /// Tracking: serving hub -> address pin road route (Route). Returns the hub
+  /// so the map can label its origin marker; the polyline itself lives in
+  /// `routing.route`.
+  Future<({String name, double lat, double lng})?> loadDeliveryRoute(LatLng destination) async {
+    dispatch(const RouteLoadRequested());
+    try {
+      final best = await _bestWarehouse(destination);
+      if (best == null) {
+        dispatch(const RouteLoadFailed('No warehouse can reach that address'));
+        return null;
+      }
+      final hub = kWarehouses[best.index];
+      dispatch(RouteLoadSucceeded(
+        await api.route([LatLng(hub.lat, hub.lng), destination]),
+      ));
+      return (name: hub.name, lat: hub.lat, lng: hub.lng);
+    } catch (err) {
+      dispatch(RouteLoadFailed(_message(err)));
+      return null;
+    }
+  }
+
+  /// Tracking: re-snap the rider's GPS trace onto roads (Match). Runs every few
+  /// ticks, so failures only update `routing.match` - never a toast.
+  Future<void> matchRiderTrace(List<TracePoint> trace) async {
+    if (trace.length < 2) return;
+    try {
+      dispatch(MatchSucceeded(await api.matchTrace(trace)));
+    } catch (err) {
+      dispatch(MatchFailed(_message(err)));
+    }
+  }
+
+  /// One tick of the rider simulation along the loaded route.
+  void moveRider(LatLng at, double progress) => dispatch(RiderAdvanced(at, progress));
+
+  /// Leaves a clean tracking slice behind when the map screen closes.
+  void resetTracking() => dispatch(const TrackingReset());
 
   // ── misc ui ───────────────────────────────────────────────────────────────
 

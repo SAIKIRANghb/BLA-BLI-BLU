@@ -6,6 +6,7 @@
 library;
 
 import 'package:flutter/foundation.dart' show immutable, mapEquals;
+import 'package:latlong2/latlong.dart';
 
 import '../core/models/models.dart';
 import 'resource.dart';
@@ -198,6 +199,59 @@ class OrderSlice {
   int get hashCode => Object.hash(list, detail, tracking, addresses, lastPlaced);
 }
 
+/// OSRM-backed routing state: checkout ETA, tracking route, matched trace.
+@immutable
+class RoutingSlice {
+  const RoutingSlice({
+    this.eta = const Resource<EtaEstimate>(),
+    this.route = const Resource<RouteResult>(),
+    this.match = const Resource<MatchResult>(),
+    this.rider,
+    this.progress = 0.0,
+  });
+
+  /// Checkout estimate - best warehouse picked from an OSRM Table query.
+  final Resource<EtaEstimate> eta;
+
+  /// Warehouse -> address road route (Route), drawn as the tracking polyline.
+  final Resource<RouteResult> route;
+
+  /// Rider GPS trace re-snapped onto roads (Match).
+  final Resource<MatchResult> match;
+
+  /// Simulated rider position along [route] (0..1 [progress]).
+  final LatLng? rider;
+  final double progress;
+
+  RoutingSlice copyWith({
+    Resource<EtaEstimate>? eta,
+    Resource<RouteResult>? route,
+    Resource<MatchResult>? match,
+    LatLng? rider,
+    double? progress,
+    bool clearRider = false,
+  }) =>
+      RoutingSlice(
+        eta: eta ?? this.eta,
+        route: route ?? this.route,
+        match: match ?? this.match,
+        rider: clearRider ? null : (rider ?? this.rider),
+        progress: progress ?? this.progress,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is RoutingSlice &&
+      other.eta == eta &&
+      other.route == route &&
+      other.match == match &&
+      other.rider == rider &&
+      other.progress == progress;
+
+  @override
+  int get hashCode => Object.hash(eta, route, match, rider, progress);
+}
+
 @immutable
 class UiSlice {
   const UiSlice({this.navIndex = 0, this.toast, this.toastIsError = false, this.searchQuery = ''});
@@ -243,6 +297,7 @@ class AppState {
     this.auth = const AuthSlice(),
     this.cart = const CartSlice(),
     this.orders = const OrderSlice(),
+    this.routing = const RoutingSlice(),
     this.ui = const UiSlice(),
     this.bootstrapped = false,
   });
@@ -252,6 +307,7 @@ class AppState {
   final AuthSlice auth;
   final CartSlice cart;
   final OrderSlice orders;
+  final RoutingSlice routing;
   final UiSlice ui;
 
   /// True once persisted token/cart id have been restored from storage.
@@ -263,6 +319,7 @@ class AppState {
     AuthSlice? auth,
     CartSlice? cart,
     OrderSlice? orders,
+    RoutingSlice? routing,
     UiSlice? ui,
     bool? bootstrapped,
   }) =>
@@ -272,6 +329,7 @@ class AppState {
         auth: auth ?? this.auth,
         cart: cart ?? this.cart,
         orders: orders ?? this.orders,
+        routing: routing ?? this.routing,
         ui: ui ?? this.ui,
         bootstrapped: bootstrapped ?? this.bootstrapped,
       );
@@ -284,11 +342,12 @@ class AppState {
       other.auth == auth &&
       other.cart == cart &&
       other.orders == orders &&
+      other.routing == routing &&
       other.ui == ui &&
       other.bootstrapped == bootstrapped;
 
   @override
-  int get hashCode => Object.hash(catalog, content, auth, cart, orders, ui, bootstrapped);
+  int get hashCode => Object.hash(catalog, content, auth, cart, orders, routing, ui, bootstrapped);
 
   @override
   String toString() => 'AppState(bootstrapped: $bootstrapped, nav: ${ui.navIndex}, items: ${cart.itemCount})';

@@ -10,6 +10,7 @@ import { createContentRouter } from './modules/content/presentation/content-rout
 import { createIdentityRouter } from './modules/identity/presentation/identity-routes.js';
 import { createCartRouter } from './modules/cart/presentation/cart-routes.js';
 import { createOrderRouter } from './modules/ordering/presentation/order-routes.js';
+import { createRoutingRouter } from './modules/routing/presentation/routing-routes.js';
 import { TokenService } from './shared/infrastructure/security.js';
 
 /**
@@ -51,6 +52,8 @@ export function createApp(overrides = {}) {
   app.use('/api', createIdentityRouter({ tokens, ...(overrides.identity ?? {}) }).router);
   app.use('/api', createCartRouter({ tokens, ...(overrides.cart ?? {}) }));
   app.use('/api', createOrderRouter({ tokens, eventBus, ...(overrides.order ?? {}) }));
+  // OpenStreetMap / OSRM: nearest, route, table, match, trip, tile.
+  app.use('/api', createRoutingRouter(overrides.routing ?? {}));
 
   // ---- cross-cutting listeners (Observer) ------------------------------
   registerDomainListeners(eventBus, logger);

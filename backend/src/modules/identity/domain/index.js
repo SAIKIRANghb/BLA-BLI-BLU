@@ -2,6 +2,7 @@ import { AggregateRoot } from '../../../shared/domain/entity.js';
 import { Email } from '../../../shared/domain/identifiers.js';
 import { DomainError } from '../../../shared/domain/domain-error.js';
 import { Repository } from '../../../shared/domain/repository.js';
+import { assertGeoPair } from '../../../shared/domain/geo.js';
 
 /**
  * User - aggregate root of the Identity bounded context.
@@ -50,7 +51,7 @@ export class User extends AggregateRoot {
  * Address - value-backed entity belonging to a user (ship-to target).
  */
 export class Address extends AggregateRoot {
-  constructor({ id, userId, label = 'Home', line1, line2 = '', city, state, pincode, phone, isDefault = false, createdAt }) {
+  constructor({ id, userId, label = 'Home', line1, line2 = '', city, state, pincode, phone, isDefault = false, lat = null, lng = null, createdAt }) {
     super(id, { createdAt });
     this.userId = userId;
     this.label = label;
@@ -61,12 +62,15 @@ export class Address extends AggregateRoot {
     this.pincode = pincode;
     this.phone = phone;
     this.isDefault = Boolean(isDefault);
+    this.lat = lat ?? null;
+    this.lng = lng ?? null;
   }
 
   validate() {
     if (!this.line1 || !this.city || !this.state) throw DomainError.validation('Address line, city and state are required');
     if (!/^\d{6}$/.test(String(this.pincode))) throw DomainError.validation('Pincode must be 6 digits');
     if (!/^\d{10}$/.test(String(this.phone ?? ''))) throw DomainError.validation('Phone must be 10 digits');
+    assertGeoPair(this.lat, this.lng);
   }
 
   toDto() {
@@ -80,6 +84,8 @@ export class Address extends AggregateRoot {
       pincode: this.pincode,
       phone: this.phone,
       isDefault: this.isDefault,
+      lat: this.lat,
+      lng: this.lng,
     };
   }
 }

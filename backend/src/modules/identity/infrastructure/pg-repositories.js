@@ -71,6 +71,8 @@ export class PgAddressRepository extends AddressRepository {
           pincode: row.pincode,
           phone: row.phone,
           isDefault: row.is_default,
+          lat: row.lat,
+          lng: row.lng,
           createdAt: row.created_at,
         })
       : null;
@@ -95,12 +97,13 @@ export class PgAddressRepository extends AddressRepository {
         await client.query('UPDATE addresses SET is_default = FALSE WHERE user_id = $1', [address.userId]);
       }
       await client.query(
-        `INSERT INTO addresses (id, user_id, label, line1, line2, city, state, pincode, phone, is_default, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        `INSERT INTO addresses (id, user_id, label, line1, line2, city, state, pincode, phone, is_default, lat, lng, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
          ON CONFLICT (id) DO UPDATE SET
            label = EXCLUDED.label, line1 = EXCLUDED.line1, line2 = EXCLUDED.line2,
            city = EXCLUDED.city, state = EXCLUDED.state, pincode = EXCLUDED.pincode,
-           phone = EXCLUDED.phone, is_default = EXCLUDED.is_default`,
+           phone = EXCLUDED.phone, is_default = EXCLUDED.is_default,
+           lat = EXCLUDED.lat, lng = EXCLUDED.lng`,
         [
           address.id,
           address.userId,
@@ -112,6 +115,8 @@ export class PgAddressRepository extends AddressRepository {
           address.pincode,
           address.phone,
           address.isDefault,
+          address.lat,
+          address.lng,
           address.createdAt,
         ],
       );

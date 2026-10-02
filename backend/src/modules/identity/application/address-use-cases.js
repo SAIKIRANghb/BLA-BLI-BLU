@@ -38,6 +38,10 @@ export class SaveAddress extends UseCase {
       pincode: fields.pincode ?? existing?.pincode,
       phone: fields.phone ?? existing?.phone,
       isDefault: fields.isDefault ?? (existingList.length === 0 ? true : existing?.isDefault ?? false),
+      // Coordinates ride along with the address; an omitted/null pair keeps
+      // whatever was pinned before (there is no "unpin" flow).
+      lat: fields.lat ?? existing?.lat,
+      lng: fields.lng ?? existing?.lng,
       createdAt: existing?.createdAt,
     });
     await this.addressRepo.save(address);

@@ -3,6 +3,7 @@ import { ValueObject } from '../../../shared/domain/value-object.js';
 import { Money } from '../../../shared/domain/money.js';
 import { DomainError } from '../../../shared/domain/domain-error.js';
 import { Repository } from '../../../shared/domain/repository.js';
+import { assertGeoPair } from '../../../shared/domain/geo.js';
 
 /**
  * OrderStatus - value object implementing a small state machine so an order
@@ -55,14 +56,15 @@ export class PaymentMethod extends ValueObject {
 
 /** ShippingAddress - immutable snapshot stored with the order. */
 export class ShippingAddress extends ValueObject {
-  constructor({ name, phone, line1, line2 = '', city, state, pincode, label = 'Home' }) {
-    super({ name, phone, line1, line2, city, state, pincode, label });
+  constructor({ name, phone, line1, line2 = '', city, state, pincode, label = 'Home', lat = null, lng = null }) {
+    super({ name, phone, line1, line2, city, state, pincode, label, lat: lat ?? null, lng: lng ?? null });
   }
 
   validate() {
     if (!this.name || !this.line1 || !this.city || !this.state) throw DomainError.validation('Incomplete shipping address');
     if (!/^\d{6}$/.test(String(this.pincode))) throw DomainError.validation('Pincode must be 6 digits');
     if (!/^\d{10}$/.test(String(this.phone))) throw DomainError.validation('Phone must be 10 digits');
+    assertGeoPair(this.lat, this.lng);
   }
 
   toDto() {

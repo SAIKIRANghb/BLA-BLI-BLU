@@ -6,6 +6,7 @@ Flutter mobile/web app plus a Node.js + PostgreSQL API.
 ```
 REPO/
 ├── backend/   Node.js (ESM + JSDoc) API — DDD layering, PostgreSQL
+├── infra/     OSRM routing stack (New Delhi OSM extract + WSL/Docker scripts)
 ├── mobile/    Flutter app — Riverpod + go_router, redux-like store
 └── _scratch/  local tooling (Flutter SDK, scraped source data) — gitignored
 ```
@@ -47,8 +48,9 @@ database (useful for quick demos).
 ### Verify
 
 ```bash
-npm run smoke                 # 40 end-to-end checks against a running server
-npm test                      # 48 domain unit tests (node --test)
+npm run smoke                 # 58 end-to-end checks against a running server
+                              # (needs OSRM up for the routing cases)
+npm test                      # 72 domain unit tests (node --test)
 ```
 
 ### API notes
@@ -63,6 +65,43 @@ npm test                      # 48 domain unit tests (node --test)
 - Track an order with order number + email/phone: `POST /api/orders/track`.
 - Invalid input → `422 VALIDATION_ERROR` with per-field `details`;
   unknown routes/products → `404 NOT_FOUND`.
+- Routing: six OSRM services under `/api/routing/` (see below).
+
+---
+
+## Maps & routing (OSM + OSRM)
+
+OpenStreetMap data is routed by [OSRM](https://github.com/Project-OSRM/osrm-backend)
+serving all six engine services through the API:
+
+| Endpoint | OSRM service | Used by the app for |
+|---|---|---|
+| `GET /api/routing/nearest` | Nearest | snapping the address-picker pin to a road |
+| `GET /api/routing/route` | Route | checkout ETA + live-map route polyline |
+| `GET /api/routing/table` | Table | multi-point ETA matrix |
+| `GET /api/routing/match` | Match | map-matching the rider's GPS trace |
+| `GET /api/routing/trip` | Trip | multi-stop trip planning (API-level) |
+| `GET /api/routing/tile/:z/:x/:y` | Tile | vector tiles (API-level, z ≥ 12) |
+
+Conventions: coordinates are `lat,lng` in the app and converted to OSRM's
+`lng,lat` at the gateway; the profile whitelist is `driving`; responses default
+to `geometries=geojson` + `overview=full`; transport failures map to
+`503 ROUTING_UNAVAILABLE` / `504 ROUTING_TIMEOUT`; validation failures to the
+usual `422 VALIDATION_ERROR` envelope.
+
+### OSRM setup (WSL2 + Docker)
+
+```bash
+infra/osrm/setup.sh     # once: downloads the BBBike New Delhi extract,
+                        # partitions (MLD) and builds the driving profile
+infra/osrm/start.sh     # docker run --restart unless-stopped → :5000
+infra/osrm/stop.sh
+```
+
+The API talks to it via `OSRM_URL` (default `http://127.0.0.1:5000`),
+`OSRM_PROFILE=driving`, `OSRM_TIMEOUT_MS=8000`. The raw/processed data lives in
+`infra/osrm/data/` (gitignored). With OSRM down the app still works — routing
+endpoints return `503` and the Flutter screens fall back gracefully.
 
 ---
 
@@ -82,8 +121,16 @@ orders, tracking, FAQ, profile and CMS pages.
 Home (hero carousel, claims, collection strips, bestsellers) · Shop with
 filter/sort · Collection listing · Search with recent searches ·
 Product detail (gallery, variants, notes, reviews) · Cart with coupons ·
-Address book + checkout (COD/UPI) · Orders, order detail, live tracking ·
+Address book + checkout (COD/UPI) with map pin & live ETA · address picker
+(map pin → manual form) · orders, order detail + live delivery map ·
 Sign in / sign up / profile · FAQ · CMS pages.
+
+Maps: **flutter_map** (OpenStreetMap tiles, `kOsmUserAgent` set) backs three
+screens — the address picker (`/addresses/pick`, snaps the pin via
+`/routing/nearest`), the checkout ETA card (`/routing/route` → "Delivers in
+~N min"), and the live delivery map (`/order/:id/live` → route polyline +
+map-matched rider trace from `/routing/match`, ticking progress while the app
+is open).
 
 ### Data source switch
 
@@ -109,9 +156,11 @@ cd mobile
 flutter pub get
 flutter run                   # device/emulator
 flutter analyze --no-pub      # 0 issues
-flutter test --no-pub         # models, reducer, CachedImage, links/routing,
-                              # pagination, hero autoplay, cart count (bar +
-                              # bag tab + add-to-bag), layout smoke
+flutter test --no-pub         # 43 tests: models, reducer, CachedImage,
+                              # links/routing, pagination, hero autoplay,
+                              # cart count (bar + bag tab + add-to-bag),
+                              # routing/geo + ETA & rider-trace logic,
+                              # layout smoke
 flutter build web --release --no-pub
 ```
 

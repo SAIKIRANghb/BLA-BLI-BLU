@@ -4,6 +4,8 @@
 /// same objects can be serialized back into the offline seed store.
 library;
 
+import 'package:latlong2/latlong.dart';
+
 class MoneyFormat {
   /// `69500` (paise) -> `₹695`
   static String rupees(int paise) {
@@ -586,6 +588,8 @@ class ShippingAddress {
     this.state = '',
     this.pincode = '',
     this.label = 'Home',
+    this.lat,
+    this.lng,
   });
 
   final String name;
@@ -596,6 +600,12 @@ class ShippingAddress {
   final String state;
   final String pincode;
   final String label;
+
+  /// Optional map pin (WGS84) - lets the tracking screen draw the destination.
+  final double? lat;
+  final double? lng;
+
+  bool get hasPin => lat != null && lng != null;
 
   String get singleLine => [line1, line2, city, state, pincode].where((s) => s.isNotEmpty).join(', ');
 
@@ -608,6 +618,8 @@ class ShippingAddress {
         state: json['state'] as String? ?? '',
         pincode: json['pincode'] as String? ?? '',
         label: json['label'] as String? ?? 'Home',
+        lat: (json['lat'] as num?)?.toDouble(),
+        lng: (json['lng'] as num?)?.toDouble(),
       );
 
   Map<String, dynamic> toJson() => {
@@ -619,6 +631,8 @@ class ShippingAddress {
         'state': state,
         'pincode': pincode,
         'label': label,
+        if (lat != null) 'lat': lat,
+        if (lng != null) 'lng': lng,
       };
 }
 
@@ -759,6 +773,8 @@ class Address {
     required this.pincode,
     required this.phone,
     this.isDefault = false,
+    this.lat,
+    this.lng,
   });
 
   final String id;
@@ -771,6 +787,12 @@ class Address {
   final String phone;
   final bool isDefault;
 
+  /// Optional map pin (WGS84) picked on the address map screen.
+  final double? lat;
+  final double? lng;
+
+  bool get hasPin => lat != null && lng != null;
+
   factory Address.fromJson(Map<String, dynamic> json) => Address(
         id: json['id'] as String,
         label: json['label'] as String? ?? 'Home',
@@ -781,10 +803,37 @@ class Address {
         pincode: json['pincode'] as String? ?? '',
         phone: json['phone'] as String? ?? '',
         isDefault: json['isDefault'] as bool? ?? false,
+        lat: (json['lat'] as num?)?.toDouble(),
+        lng: (json['lng'] as num?)?.toDouble(),
       );
 
-  ShippingAddress toShipping(String name) =>
-      ShippingAddress(name: name, phone: phone, line1: line1, line2: line2, city: city, state: state, pincode: pincode, label: label);
+  /// Same address with (or without) a map pin - used after the picker returns.
+  Address withPin(double? lat, double? lng) => Address(
+        id: id,
+        label: label,
+        line1: line1,
+        line2: line2,
+        city: city,
+        state: state,
+        pincode: pincode,
+        phone: phone,
+        isDefault: isDefault,
+        lat: lat,
+        lng: lng,
+      );
+
+  ShippingAddress toShipping(String name) => ShippingAddress(
+        name: name,
+        phone: phone,
+        line1: line1,
+        line2: line2,
+        city: city,
+        state: state,
+        pincode: pincode,
+        label: label,
+        lat: lat,
+        lng: lng,
+      );
 }
 
 class PageContent {
@@ -816,3 +865,190 @@ class ProductPage {
         totalPages: (json['totalPages'] as num?)?.toInt() ?? 1,
       );
 }
+
+// ────────────────────────────────── Routing ───────────────────────────────────
+// DTOs for the six OSRM services proxied by `/api/routing/*`. Geometry always
+// arrives as GeoJSON (`[lng, lat]` pairs) and is flipped to [LatLng] here.
+
+/// One point of a GPS trace fed to OSRM Match.
+class TracePoint {
+  const TracePoint({required this.location, required this.timestamp, this.accuracy});
+
+  final LatLng location;
+
+  /// Epoch seconds - must be monotonically increasing for Match.
+  final int timestamp;
+
+  /// GPS accuracy in metres, forwarded as OSRM `radiuses`.
+  final double? accuracy;
+}
+
+/// Nearest - the road-snapped version of a dropped pin.
+class NearestResult {
+  const NearestResult({required this.location, this.name = '', this.snapDistance = 0});
+
+  final LatLng location;
+
+  /// Name of the street/way the point snapped to (may be empty).
+  final String name;
+
+  /// Metres between the input point and the snapped location.
+  final double snapDistance;
+
+  factory NearestResult.fromJson(Map<String, dynamic> json) {
+    final wp = ((json['waypoints'] as List?) ?? const []).firstOrNull;
+    final location = ((wp?['location'] as List?) ?? const [0, 0]);
+    return NearestResult(
+      location: LatLng((location.elementAtOrNull(1) as num? ?? 0).toDouble(), (location.firstOrNull as num? ?? 0).toDouble()),
+      name: wp?['name'] as String? ?? '',
+      snapDistance: (wp?['distance'] as num?)?.toDouble() ?? 0,
+    );
+  }
+}
+
+/// Route - distance/duration plus the road polyline to draw on a map.
+class RouteResult {
+  const RouteResult({required this.distance, required this.duration, required this.geometry, this.legs = const []});
+
+  /// Total length in metres.
+  final double distance;
+
+  /// Total travel time in seconds.
+  final double duration;
+
+  final List<LatLng> geometry;
+
+  /// Per-leg breakdown (one leg per input waypoint pair).
+  final List<RouteLeg> legs;
+
+  factory RouteResult.fromJson(Map<String, dynamic> json) {
+    final route = ((json['routes'] as List?) ?? const []).firstOrNull ?? const <String, dynamic>{};
+    return RouteResult(
+      distance: (route['distance'] as num?)?.toDouble() ?? 0,
+      duration: (route['duration'] as num?)?.toDouble() ?? 0,
+      geometry: _lineFrom(route['geometry']),
+      legs: ((route['legs'] as List?) ?? const [])
+          .map((l) => RouteLeg.fromJson((l as Map).cast<String, dynamic>()))
+          .toList(growable: false),
+    );
+  }
+}
+
+class RouteLeg {
+  const RouteLeg({required this.distance, required this.duration, this.summary = ''});
+
+  final double distance;
+  final double duration;
+  final String summary;
+
+  factory RouteLeg.fromJson(Map<String, dynamic> json) => RouteLeg(
+        distance: (json['distance'] as num?)?.toDouble() ?? 0,
+        duration: (json['duration'] as num?)?.toDouble() ?? 0,
+        summary: json['summary'] as String? ?? '',
+      );
+}
+
+/// Table - pairwise travel times between the given points.
+class TableResult {
+  const TableResult({required this.durations, required this.distances});
+
+  /// `durations[source][destination]` in seconds (`null` = unreachable).
+  final List<List<double?>> durations;
+
+  /// `distances[source][destination]` in metres, same indexing.
+  final List<List<double?>> distances;
+
+  factory TableResult.fromJson(Map<String, dynamic> json) => TableResult(
+        durations: _matrix(json['durations']),
+        distances: _matrix(json['distances']),
+      );
+
+  /// Best (shortest) duration in seconds across [sourceRow] -> all columns,
+  /// or `null` when nothing is reachable.
+  double? bestFrom(int sourceRow) {
+    if (sourceRow < 0 || sourceRow >= durations.length) return null;
+    double? best;
+    for (final d in durations[sourceRow]) {
+      if (d != null && (best == null || d < best)) best = d;
+    }
+    return best;
+  }
+}
+
+/// Match - a GPS trace re-snapped onto the road network.
+class MatchResult {
+  const MatchResult({required this.distance, required this.duration, required this.geometry, this.confidence = 0});
+
+  final double distance;
+  final double duration;
+  final List<LatLng> geometry;
+
+  /// 0..1 - OSRM's trace quality score.
+  final double confidence;
+
+  factory MatchResult.fromJson(Map<String, dynamic> json) {
+    final m = ((json['matchings'] as List?) ?? const []).firstOrNull ?? const <String, dynamic>{};
+    return MatchResult(
+      distance: (m['distance'] as num?)?.toDouble() ?? 0,
+      duration: (m['duration'] as num?)?.toDouble() ?? 0,
+      geometry: _lineFrom(m['geometry']),
+      confidence: (m['confidence'] as num?)?.toDouble() ?? 0,
+    );
+  }
+}
+
+/// Trip - a set of waypoints reordered into an optimal tour.
+class TripResult {
+  const TripResult({required this.distance, required this.duration, required this.geometry});
+
+  final double distance;
+  final double duration;
+  final List<LatLng> geometry;
+
+  factory TripResult.fromJson(Map<String, dynamic> json) {
+    final t = ((json['trips'] as List?) ?? const []).firstOrNull ?? const <String, dynamic>{};
+    return TripResult(
+      distance: (t['distance'] as num?)?.toDouble() ?? 0,
+      duration: (t['duration'] as num?)?.toDouble() ?? 0,
+      geometry: _lineFrom(t['geometry']),
+    );
+  }
+}
+
+/// Checkout ETA card: nearest warehouse -> address pin.
+class EtaEstimate {
+  const EtaEstimate({required this.warehouse, required this.distance, required this.duration});
+
+  /// Which fulfilment hub is serving the order.
+  final String warehouse;
+
+  /// Road distance in metres.
+  final double distance;
+
+  /// Travel time in seconds.
+  final double duration;
+
+  String get distanceLabel => distance < 1000 ? '${distance.round()} m' : '${(distance / 1000).toStringAsFixed(1)} km';
+
+  String get durationLabel {
+    final minutes = (duration / 60).ceil();
+    return minutes < 60 ? '$minutes min' : '${minutes ~/ 60} hr ${minutes % 60} min';
+  }
+}
+
+// GeoJSON `[lng, lat]` pairs -> [LatLng].
+List<LatLng> _lineFrom(dynamic geometry) {
+  final coords = ((geometry as Map?)?['coordinates'] as List?) ?? const [];
+  return [
+    for (final c in coords)
+      LatLng(
+        ((c as List).elementAtOrNull(1) as num? ?? 0).toDouble(),
+        (c.firstOrNull as num? ?? 0).toDouble(),
+      ),
+  ];
+}
+
+List<List<double?>> _matrix(dynamic value) => [
+      for (final row in ((value as List?) ?? const []))
+        [for (final cell in ((row as List?) ?? const [])) (cell as num?)?.toDouble()],
+    ];

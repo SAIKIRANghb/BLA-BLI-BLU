@@ -41,6 +41,9 @@ export const identitySchemas = {
     pincode: z.string().regex(/^\d{6}$/),
     phone: z.string().regex(/^\d{10}$/),
     isDefault: z.boolean().optional(),
+    // Optional map pin picked on the address map screen.
+    lat: z.number().min(-90).max(90).nullable().optional(),
+    lng: z.number().min(-180).max(180).nullable().optional(),
   }),
 };
 

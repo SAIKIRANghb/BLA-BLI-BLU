@@ -121,6 +121,8 @@ export class PlaceOrder extends UseCase {
         state: saved.state,
         pincode: saved.pincode,
         label: saved.label,
+        lat: saved.lat,
+        lng: saved.lng,
       });
     }
     if (!address) throw DomainError.validation('Shipping address is required');

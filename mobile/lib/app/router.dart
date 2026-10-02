@@ -9,8 +9,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../features/account/account_screen.dart';
+import '../features/account/address_picker_screen.dart';
 import '../features/account/addresses_screen.dart';
 import '../features/auth/sign_in_screen.dart';
 import '../features/auth/sign_up_screen.dart';
@@ -19,6 +21,7 @@ import '../features/checkout/checkout_screen.dart';
 import '../features/content/faq_screen.dart';
 import '../features/content/page_screen.dart';
 import '../features/home/home_screen.dart';
+import '../features/orders/delivery_map_screen.dart';
 import '../features/orders/order_detail_screen.dart';
 import '../features/orders/order_success_screen.dart';
 import '../features/orders/orders_screen.dart';
@@ -130,6 +133,14 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/order/:id',
         parentNavigatorKey: _rootKey,
         builder: (context, state) => OrderDetailScreen(orderId: state.pathParameters['id']!),
+        routes: [
+          // Live tracking map; public like its parent so shared links work.
+          GoRoute(
+            path: 'live',
+            parentNavigatorKey: _rootKey,
+            builder: (context, state) => DeliveryMapScreen(orderId: state.pathParameters['id']!),
+          ),
+        ],
       ),
       GoRoute(
         path: '/track',
@@ -140,6 +151,14 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/addresses',
         parentNavigatorKey: _rootKey,
         builder: (context, state) => const AddressesScreen(),
+        routes: [
+          // Pushed above the address dialog so the picker can return a pin.
+          GoRoute(
+            path: 'pick',
+            parentNavigatorKey: _rootKey,
+            builder: (context, state) => AddressPickerScreen(initialPin: state.extra as LatLng?),
+          ),
+        ],
       ),
       GoRoute(
         path: '/faq',

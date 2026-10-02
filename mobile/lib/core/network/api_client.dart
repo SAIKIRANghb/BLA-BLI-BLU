@@ -15,9 +15,12 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
+import 'package:latlong2/latlong.dart';
 
 import '../config/app_config.dart';
 import '../models/models.dart';
@@ -66,6 +69,14 @@ abstract class AppApi {
   Future<List<Address>> getAddresses({required String token});
   Future<Address> saveAddress({required String token, Address? id, Map<String, dynamic>? fields});
   Future<void> deleteAddress({required String token, required String id});
+
+  // routing (OSRM: nearest, route, table, match, trip, tile)
+  Future<NearestResult> nearest({required double lat, required double lng, int number = 1});
+  Future<RouteResult> route(List<LatLng> points, {String overview = 'full', bool geometriesGeojson = true});
+  Future<TableResult> table(List<LatLng> points, {List<int>? sources, List<int>? destinations});
+  Future<MatchResult> matchTrace(List<TracePoint> points);
+  Future<TripResult> trip(List<LatLng> points, {bool roundtrip = true, String source = 'any', String destination = 'any'});
+  Future<Uint8List> vectorTile(int z, int x, int y);
 }
 
 /// Raised for any transport / protocol failure. [statusCode] is 0 for offline.
@@ -115,6 +126,27 @@ class LiveApi implements AppApi {
       _send('PATCH', path, body: body, token: token);
 
   Future<_Envelope> _delete(String path, {String? token}) => _send('DELETE', path, token: token);
+
+  /// Binary variant of [_get] - vector tiles are MVT bytes, not JSON.
+  Future<Uint8List> _getBytes(String path) async {
+    final request = http.Request('GET', Uri.parse('$_baseUrl$path'));
+    http.StreamedResponse streamed;
+    try {
+      streamed = await _client.send(request).timeout(_timeout);
+    } on TimeoutException {
+      throw const ApiException('Request timed out. Check your connection.', statusCode: 0);
+    } catch (err) {
+      throw ApiException('Could not reach the server', statusCode: 0, code: err.toString());
+    }
+    if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
+      throw ApiException('Tile request failed', statusCode: streamed.statusCode, code: 'ROUTING_ERROR');
+    }
+    final bytes = <int>[];
+    await for (final chunk in streamed.stream) {
+      bytes.addAll(chunk);
+    }
+    return Uint8List.fromList(bytes);
+  }
 
   Future<_Envelope> _send(
     String method,
@@ -301,6 +333,74 @@ class LiveApi implements AppApi {
 
   @override
   Future<void> deleteAddress({required String token, required String id}) => _delete('/addresses/$id', token: token);
+
+  // ── routing (six OSRM services behind /api/routing) ─────────────────────
+
+  /// `lat,lng;lat,lng;...` - the app's convention, semicolon-separated.
+  static String _points(List<LatLng> points) => points.map((p) => '${p.latitude},${p.longitude}').join(';');
+
+  @override
+  Future<NearestResult> nearest({required double lat, required double lng, int number = 1}) async => NearestResult.fromJson(
+        ((await _get('/routing/nearest', query: {'point': '$lat,$lng', 'number': '$number'})).data as Map).cast<String, dynamic>(),
+      );
+
+  @override
+  Future<RouteResult> route(List<LatLng> points, {String overview = 'full', bool geometriesGeojson = true}) async =>
+      RouteResult.fromJson(
+        ((await _get('/routing/route', query: {
+          'points': _points(points),
+          'overview': overview,
+          'geometries': geometriesGeojson ? 'geojson' : 'polyline',
+        }))
+            .data as Map)
+            .cast<String, dynamic>(),
+      );
+
+  @override
+  Future<TableResult> table(List<LatLng> points, {List<int>? sources, List<int>? destinations}) async => TableResult.fromJson(
+        ((await _get('/routing/table', query: {
+          'points': _points(points),
+          if (sources != null) 'sources': sources.join(','),
+          if (destinations != null) 'destinations': destinations.join(','),
+          'annotations': 'duration,distance',
+        }))
+            .data as Map)
+            .cast<String, dynamic>(),
+      );
+
+  @override
+  Future<MatchResult> matchTrace(List<TracePoint> points) async => MatchResult.fromJson(
+        ((await _get('/routing/match', query: {
+          'points': _points([for (final p in points) p.location]),
+          'timestamps': points.map((p) => '${p.timestamp}').join(','),
+          if (points.every((p) => p.accuracy != null)) 'radiuses': points.map((p) => '${p.accuracy!.round()}').join(','),
+          'overview': 'full',
+        }))
+            .data as Map)
+            .cast<String, dynamic>(),
+      );
+
+  @override
+  Future<TripResult> trip(
+    List<LatLng> points, {
+    bool roundtrip = true,
+    String source = 'any',
+    String destination = 'any',
+  }) async =>
+      TripResult.fromJson(
+        ((await _get('/routing/trip', query: {
+          'points': _points(points),
+          'roundtrip': '$roundtrip',
+          'source': source,
+          'destination': destination,
+          'overview': 'full',
+        }))
+            .data as Map)
+            .cast<String, dynamic>(),
+      );
+
+  @override
+  Future<Uint8List> vectorTile(int z, int x, int y) => _getBytes('/routing/tile/$z/$x/$y');
 
   void dispose() => _client.close();
 }
@@ -806,6 +906,9 @@ class SeedApi implements AppApi {
           pincode: (payload['pincode'] as String?) ?? id?.pincode ?? '',
           phone: (payload['phone'] as String?) ?? id?.phone ?? '',
           isDefault: (payload['isDefault'] as bool?) ?? list.isEmpty,
+          // Map pin: an omitted/null pair keeps the previously pinned spot.
+          lat: (payload['lat'] as num?)?.toDouble() ?? id?.lat,
+          lng: (payload['lng'] as num?)?.toDouble() ?? id?.lng,
         );
         list.removeWhere((a) => a.id == address.id);
         list.insert(0, address);
@@ -819,6 +922,128 @@ class SeedApi implements AppApi {
         final list = [...(_addresses[userId] ?? <Address>[])]..removeWhere((a) => a.id == id);
         _addresses[userId] = list;
       });
+
+  // ── routing (offline estimates - no engine, no tiles) ───────────────────
+  //
+  // The seed keeps map screens useful without the OSRM container: haversine
+  // straight-line distance scaled by a road factor, an average city pace for
+  // time, identity snapping for Nearest/Match, and a greedy nearest-neighbour
+  // tour for Trip. Vector tiles have no offline equivalent -> 501.
+
+  static const double _roadFactor = 1.3; // straight line -> road detour ratio
+  static const double _citySpeed = 8.3; // ~30 km/h average city pace (m/s)
+
+  /// Metres between two points (haversine on a spherical earth).
+  double _haversine(LatLng a, LatLng b) {
+    const r = 6371000.0;
+    const d2r = math.pi / 180;
+    final dLat = (b.latitude - a.latitude) * d2r;
+    final dLng = (b.longitude - a.longitude) * d2r;
+    final h = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(a.latitude * d2r) * math.cos(b.latitude * d2r) * math.sin(dLng / 2) * math.sin(dLng / 2);
+    return 2 * r * math.asin(math.sqrt(h.clamp(0.0, 1.0)));
+  }
+
+  double _roadMetres(LatLng a, LatLng b) => _haversine(a, b) * _roadFactor;
+  double _seconds(double metres) => metres / _citySpeed;
+
+  List<LatLng> _straight(List<LatLng> points) => List<LatLng>.unmodifiable(points);
+
+  @override
+  Future<NearestResult> nearest({required double lat, required double lng, int number = 1}) async {
+    // Identity snap: the seed has no road graph to project onto, so the pin
+    // stays where it was dropped (OSRM's `number` fan-out has no local use).
+    return NearestResult(location: LatLng(lat, lng), name: 'Unnamed road', snapDistance: 0);
+  }
+
+  @override
+  Future<RouteResult> route(List<LatLng> points, {String overview = 'full', bool geometriesGeojson = true}) async {
+    if (points.length < 2) throw const ApiException('Expected at least 2 points', statusCode: 400, code: 'INVALID_COORDINATES');
+    double metres = 0;
+    for (var i = 1; i < points.length; i++) {
+      metres += _roadMetres(points[i - 1], points[i]);
+    }
+    return RouteResult(distance: metres, duration: _seconds(metres), geometry: _straight(points), legs: const []);
+  }
+
+  @override
+  Future<TableResult> table(List<LatLng> points, {List<int>? sources, List<int>? destinations}) async {
+    final src = sources ?? [for (var i = 0; i < points.length; i++) i];
+    final dst = destinations ?? [for (var i = 0; i < points.length; i++) i];
+    final durations = <List<double?>>[
+      for (final s in src) [for (final d in dst) s == d ? 0 : _seconds(_roadMetres(points[s], points[d]))],
+    ];
+    final distances = <List<double?>>[
+      for (final s in src) [for (final d in dst) s == d ? 0 : _roadMetres(points[s], points[d])],
+    ];
+    return TableResult(durations: durations, distances: distances);
+  }
+
+  @override
+  Future<MatchResult> matchTrace(List<TracePoint> points) async {
+    if (points.length < 2) {
+      throw const ApiException('Expected at least 2 trace points', statusCode: 400, code: 'INVALID_COORDINATES');
+    }
+    // Identity match: hand the raw trace back as the "snapped" geometry.
+    double metres = 0;
+    for (var i = 1; i < points.length; i++) {
+      metres += _roadMetres(points[i - 1].location, points[i].location);
+    }
+    return MatchResult(
+      distance: metres,
+      duration: _seconds(metres),
+      geometry: _straight([for (final p in points) p.location]),
+      confidence: 1,
+    );
+  }
+
+  @override
+  Future<TripResult> trip(
+    List<LatLng> points, {
+    bool roundtrip = true,
+    String source = 'any',
+    String destination = 'any',
+  }) async {
+    if (points.length < 2) throw const ApiException('Expected at least 2 points', statusCode: 400, code: 'INVALID_COORDINATES');
+
+    // Greedy nearest-neighbour ordering (2-opt quality, tiny code). The seed
+    // tour always departs the first point, whatever `source` asks for.
+    final unvisited = [for (var i = 1; i < points.length; i++) i];
+    var last = 0;
+    final order = <int>[last];
+    while (unvisited.isNotEmpty) {
+      var best = unvisited.first;
+      var bestD = double.infinity;
+      for (final i in unvisited) {
+        final d = _haversine(points[last], points[i]);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      }
+      unvisited.remove(best);
+      order.add(best);
+      last = best;
+    }
+    // Open trip: force the endpoint when the caller pinned it.
+    if (!roundtrip && destination == 'last' && order.last != points.length - 1) {
+      final forced = points.length - 1;
+      order.remove(forced);
+      order.add(forced);
+    }
+    if (roundtrip) order.add(order.first);
+
+    final path = [for (final i in order) points[i]];
+    double metres = 0;
+    for (var i = 1; i < path.length; i++) {
+      metres += _roadMetres(path[i - 1], path[i]);
+    }
+    return TripResult(distance: metres, duration: _seconds(metres), geometry: _straight(path));
+  }
+
+  @override
+  Future<Uint8List> vectorTile(int z, int x, int y) async =>
+      throw ApiException('Vector tiles are unavailable in seed mode', statusCode: 501, code: 'NOT_SUPPORTED');
 }
 
 // ────────────────────────────────── Factory ──────────────────────────────────

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../../core/config/app_config.dart';
 import '../../core/models/models.dart';
@@ -83,6 +85,8 @@ class _AddressesScreenState extends ConsumerState<AddressesScreen> {
             'state': saved.state,
             'pincode': saved.pincode,
             'phone': saved.phone,
+            'lat': saved.lat,
+            'lng': saved.lng,
           },
         );
   }
@@ -188,6 +192,11 @@ class _AddressDialogState extends State<_AddressDialog> {
   late final TextEditingController _pincode = TextEditingController(text: widget.existing?.pincode ?? '');
   late final TextEditingController _phone = TextEditingController(text: widget.existing?.phone ?? '');
 
+  /// Map pin chosen on `/addresses/pick` (seeded from an existing address).
+  late LatLng? _pin = widget.existing?.hasPin ?? false
+      ? LatLng(widget.existing!.lat!, widget.existing!.lng!)
+      : null;
+
   @override
   void dispose() {
     for (final c in [_label, _line1, _line2, _city, _state, _pincode, _phone]) {
@@ -261,6 +270,43 @@ class _AddressDialogState extends State<_AddressDialog> {
                     return digits.length >= 10 ? null : 'Enter a valid phone number';
                   },
                 ),
+                const SizedBox(height: 14),
+                Container(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+                  decoration: BoxDecoration(
+                    color: AppColors.background,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.line),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        _pin == null ? Icons.location_off_outlined : Icons.location_on_outlined,
+                        size: 18,
+                        color: _pin == null ? AppColors.muted : AppColors.primary,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Map pin', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w800)),
+                            Text(
+                              _pin == null
+                                  ? 'Not set - live tracking needs it'
+                                  : '${_pin!.latitude.toStringAsFixed(5)}, ${_pin!.longitude.toStringAsFixed(5)}',
+                              style: const TextStyle(fontSize: 12, color: AppColors.muted),
+                            ),
+                          ],
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: _pickOnMap,
+                        child: Text(_pin == null ? 'Pick on map' : 'Change'),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
@@ -277,6 +323,13 @@ class _AddressDialogState extends State<_AddressDialog> {
     );
   }
 
+  /// Opens the map picker above the dialog and adopts the returned pin.
+  Future<void> _pickOnMap() async {
+    final pin = await context.push<LatLng>('/addresses/pick', extra: _pin);
+    if (pin == null || !mounted) return;
+    setState(() => _pin = pin);
+  }
+
   void _save() {
     if (!(_formKey.currentState?.validate() ?? false)) return;
     Navigator.pop(
@@ -291,6 +344,8 @@ class _AddressDialogState extends State<_AddressDialog> {
         pincode: _pincode.text.trim(),
         phone: _phone.text.trim(),
         isDefault: widget.existing?.isDefault ?? false,
+        lat: _pin?.latitude,
+        lng: _pin?.longitude,
       ),
     );
   }

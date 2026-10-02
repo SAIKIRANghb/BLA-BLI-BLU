@@ -5,6 +5,7 @@ export 'async_state_view.dart';
 export 'cached_image.dart';
 export 'cart_icon_button.dart';
 export 'empty_state.dart';
+export 'osm_map.dart';
 export 'price_text.dart';
 export 'product_card.dart';
 export 'qty_stepper.dart';

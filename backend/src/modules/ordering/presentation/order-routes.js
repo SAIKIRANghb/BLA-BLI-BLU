@@ -21,6 +21,9 @@ const addressSchema = z.object({
   state: z.string().min(2).max(60),
   pincode: z.string().regex(/^\d{6}$/),
   label: z.string().max(30).optional(),
+  // Optional map pin - lets the tracking screen draw the destination.
+  lat: z.number().min(-90).max(90).nullable().optional(),
+  lng: z.number().min(-180).max(180).nullable().optional(),
 });
 
 export const orderSchemas = {

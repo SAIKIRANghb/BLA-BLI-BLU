@@ -132,6 +132,14 @@ class _OrderDetailScreenState extends ConsumerState<OrderDetailScreen> {
                   const SizedBox(height: 3),
                   Text('Ph ${order.address.phone}', style: const TextStyle(fontSize: 13, color: AppColors.muted)),
                 ],
+                if (order.address.hasPin) ...[
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: () => context.push('/order/${order.id}/live'),
+                    icon: const Icon(Icons.map_outlined, size: 18),
+                    label: const Text('Live delivery map'),
+                  ),
+                ],
               ],
             ),
           ),
