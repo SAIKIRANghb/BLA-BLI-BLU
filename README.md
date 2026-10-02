@@ -172,6 +172,24 @@ deliberately golden-free so it passes on any machine.
 > `_scratch/flutter/` (gitignored). If `flutter` is not on your PATH, invoke
 > `_scratch\flutter\bin\flutter.bat` (or install Flutter yourself) and run all
 > commands from `mobile/` with `--no-pub` after a one-time `flutter pub get`.
+>
+> **Paths must not contain spaces.** This repo lives under
+> `...\CLIENT PROJECT\...`, and running `flutter run`/`build` from the real
+> path fails in the native-assets step with
+> `'C:\Users\...\CLIENT' is not recognized as an internal or external command`
+> — Windows `cmd.exe` quote-stripping when hooks (e.g. `objective_c`'s
+> `hook/build.dart`) are spawned. Use a directory junction so both the SDK and
+> the project resolve to a space-free path (created once, at the repo root):
+>
+> ```bat
+> mklink /J C:\blabliblu "%CD%"
+> cd /d C:\blabliblu\mobile
+> C:\blabliblu\_scratch\flutter\bin\flutter.bat run -d chrome
+> ```
+>
+> Pointing PATH at `C:\blabliblu\_scratch\flutter\bin` makes the bare `flutter`
+> command work too. Never edit files under the SDK or pub cache to work around
+> this — the junction is the supported fix.
 
 ---
 
