@@ -226,7 +226,7 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Sign out?'),
-        content: const Text('Your bag will be kept on this device.'),
+        content: const Text('This clears the app completely on this device: your session, bag, orders and everything else stored here.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
           FilledButton(
@@ -238,8 +238,15 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
       ),
     );
     if (confirmed != true) return;
-    await ref.read(storeProvider.notifier).signOut();
+    final store = ref.read(storeProvider.notifier);
+    // Leave the protected tab *before* the auth flips. Once `signOut` clears
+    // the session the router refresh bounces `/account` to the root-level
+    // `/sign-in` route, and a second navigation back to `/` landing in the
+    // same frame makes the shell's GlobalKey exist twice ("Duplicate GlobalKey"
+    // assertion). Navigate first, then flush: the refresh then evaluates
+    // against `/`, which is public, and stays put.
     if (context.mounted) context.go('/');
+    await store.signOut();
   }
 
   Future<void> _editProfile(BuildContext context) async {

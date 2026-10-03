@@ -121,7 +121,12 @@ AppState rootReducer(AppState state, AppAction action) {
     AuthFailed(:final message) => state.copyWith(
         auth: state.auth.copyWith(request: state.auth.request.toError(message)),
       ),
-    AuthSignedOut() => state.copyWith(auth: const AuthSlice()),
+    // Sign-out wipes the whole tree: catalogue, content, auth, cart, orders,
+    // routing and UI all go back to their pristine value. `bootstrapped` is
+    // carried over (the persisted session was already restored once; a flush
+    // is not a cold start), and the store re-loads the public shell after
+    // dispatching this - see `Store.signOut`.
+    StateFlushed() => AppState(bootstrapped: state.bootstrapped),
     ProfileUpdated(:final user) => state.copyWith(
         auth: state.auth.copyWith(user: user, session: state.auth.session == null ? null : _withUser(state.auth.session!, user)),
       ),

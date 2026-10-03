@@ -34,6 +34,12 @@ class _CartScreenState extends ConsumerState<CartScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // The bag tab stays alive across a logout: flush the coupon the previous
+    // user typed along with the rest of the store.
+    ref.listen(storeProvider.select((s) => s.auth.isAuthenticated), (previous, next) {
+      if (previous == true && next == false) _couponController.clear();
+    });
+
     final cartRes = ref.watch(storeProvider.select((s) => s.cart.cart));
     final busy = ref.watch(storeProvider.select((s) => s.cart.busy));
     final cart = cartRes.value;

@@ -152,6 +152,14 @@ store: a single immutable `AppState`, a sealed `AppAction` union, a pure
 `rootReducer`, and a `Store extends Notifier<AppState>` that the UI reads via
 `store.select(...)` (subscribers rebuild only on the slices they select).
 
+Sign-out is a **full state flush**: one `StateFlushed` action resets every
+slice (catalogue, auth, bag, orders, addresses, routing, UI) to its pristine
+value, the persisted token *and* cart id are dropped, a fresh guest cart is
+created and the public shell (home/collections) is re-fetched. Async thunks
+carry a flush generation so a reply already in flight can't repopulate the
+tree, and the kept-alive tabs (search query, bag coupon, product grids)
+clear/refetch themselves.
+
 Routing: **go_router**, ShellRoute with a persistent bottom nav
 (Home / Shop / Search / Bag) plus full-screen routes for auth, checkout,
 orders, tracking, FAQ, profile and CMS pages.
@@ -235,13 +243,13 @@ cd mobile
 flutter pub get
 flutter run                   # device/emulator
 flutter analyze --no-pub      # 0 issues
-flutter test --no-pub         # 69 tests: models, reducer, CachedImage,
+flutter test --no-pub         # 72 tests: models, reducer, CachedImage,
                               # links/routing, pagination, hero autoplay,
                               # cart count (bar + bag tab + add-to-bag),
                               # routing/geo + ETA & rider-trace logic,
                               # rider tracking (route math, DTOs, seed+live
                               # API contracts), rider marker glider,
-                              # layout smoke
+                              # sign-out state flush, layout smoke
 flutter build web --release --no-pub
 ```
 

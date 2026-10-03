@@ -161,8 +161,13 @@ class AuthFailed extends AppAction {
   final String message;
 }
 
-class AuthSignedOut extends AppAction {
-  const AuthSignedOut();
+/// Sign-out: a **full** state flush.
+///
+/// Not an auth-only clear - the reducer resets every slice (catalogue, auth,
+/// cart, orders, routing, UI) back to its pristine value, so nothing the
+/// previous session loaded - public or private - survives on the device.
+class StateFlushed extends AppAction {
+  const StateFlushed();
 }
 
 class ProfileUpdated extends AppAction {

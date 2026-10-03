@@ -44,8 +44,26 @@ class Store extends Notifier<AppState> {
   static const _kToken = 'bbl.token';
   static const _kCartId = 'bbl.cartId';
 
+  /// Bumped by [signOut] the moment the tree is flushed.
+  ///
+  /// Thunks are async: a response fired *before* sign-out can land *after*
+  /// the flush and repopulate the slices we just wiped (the account tab
+  /// loads orders and addresses on entry - sign out a second later on a slow
+  /// network and the previous user's orders come back). Every thunk holding
+  /// private data captures this generation before its first await and drops
+  /// the reply when it no longer matches. Public catalogue reads are
+  /// deliberately *not* guarded: their data is identical on either side of a
+  /// flush, and letting them land is what refills the emptied tabs instead of
+  /// leaving them on a skeleton.
+  int _flushGen = 0;
+
+  /// True while a reply captured under [gen] is still wanted.
+  bool _live(int gen) => gen == _flushGen;
+
   Future<void> bootstrap() async {
+    final gen = _flushGen;
     final prefs = await SharedPreferences.getInstance();
+    if (!_live(gen)) return; // a flush landed while storage was being read
     dispatch(BootstrapCompleted(
       restoredToken: prefs.getString(_kToken),
       restoredCartId: prefs.getString(_kCartId),
@@ -181,9 +199,11 @@ class Store extends Notifier<AppState> {
       _authenticate(() => api.login(email: email, password: password));
 
   Future<bool> _authenticate(Future<AuthSession> Function() run) async {
+    final gen = _flushGen;
     dispatch(const AuthRequestStarted());
     try {
       final session = await run();
+      if (!_live(gen)) return false; // signed out mid-flight: keep the flush
       dispatch(AuthSucceeded(session));
       await _persistSession(session.accessToken);
       // A signed-in device gets its server-side cart merged into the local one.
@@ -191,34 +211,55 @@ class Store extends Notifier<AppState> {
       if (guestId != null) {
         try {
           final merged = await api.mergeCart(cartId: guestId, token: session.accessToken);
-          await _adoptCart(merged);
+          if (_live(gen)) await _adoptCart(merged);
         } catch (_) {
           /* merge is best-effort */
         }
       }
+      if (!_live(gen)) return false;
       await refreshCart();
+      // A sign-out flush dropped the previous session's private slices, so a
+      // new session brings its own back - the account tab reads these counts
+      // and would otherwise claim "0 placed". Failures just land as errors.
+      loadOrders();
+      loadAddresses();
       return true;
     } catch (err) {
+      if (!_live(gen)) return false;
       dispatch(AuthFailed(_message(err)));
       return false;
     }
   }
 
+  /// Signs out and flushes **every** slice of the store.
+  ///
+  /// One [StateFlushed] action takes the whole tree back to its pristine
+  /// value - session, bag, orders, addresses, routing/tracking, catalogue
+  /// caches and UI state all die together - the persisted token *and* cart id
+  /// are dropped (the bag is not kept across sign-out any more), a brand-new
+  /// guest cart is created, and the public shell (home + collections) is
+  /// re-fetched so the kept-alive tabs never sit on an empty slot that
+  /// nothing will ever fill.
   Future<void> signOut() async {
-    dispatch(const AuthSignedOut());
+    _flushGen++; // drop replies already in flight under the old session
+    dispatch(const StateFlushed());
     await _persistSession(null);
-    await createFreshCart();
+    await _persistCartId(null);
+    await Future.wait([loadHome(), loadCollections(), createFreshCart()]);
   }
 
   Future<bool> updateProfile({String? name, String? phone}) async {
     final token = state.auth.token;
     if (token == null) return false;
+    final gen = _flushGen;
     try {
       final user = await api.updateProfile(token: token, name: name, phone: phone);
+      if (!_live(gen)) return false;
       dispatch(ProfileUpdated(user));
       _toast('Profile updated');
       return true;
     } catch (err) {
+      if (!_live(gen)) return false;
       _toast(_message(err), error: true);
       return false;
     }
@@ -238,9 +279,13 @@ class Store extends Notifier<AppState> {
   }
 
   Future<void> createFreshCart() async {
+    final gen = _flushGen;
     try {
-      await _adoptCart(await api.createCart(token: _token));
+      final cart = await api.createCart(token: _token);
+      if (!_live(gen)) return;
+      await _adoptCart(cart);
     } catch (err) {
+      if (!_live(gen)) return;
       dispatch(CartLoadFailed(_message(err)));
     }
   }
@@ -256,19 +301,25 @@ class Store extends Notifier<AppState> {
   Future<void> refreshCart() async {
     final id = state.cart.cartId;
     if (id == null) return;
+    final gen = _flushGen;
     try {
-      dispatch(CartLoadSucceeded(await api.getCart(id, token: _token)));
+      final cart = await api.getCart(id, token: _token);
+      if (!_live(gen)) return;
+      dispatch(CartLoadSucceeded(cart));
     } catch (err) {
+      if (!_live(gen)) return;
       dispatch(CartLoadFailed(_message(err)));
     }
   }
 
   Future<void> addToCart(ProductDetail product, {ProductVariant? variant, int qty = 1}) async {
+    final gen = _flushGen;
     dispatch(const CartBusyChanged(true));
     try {
       var id = state.cart.cartId;
       if (id == null) {
         final created = await api.createCart(token: _token);
+        if (!_live(gen)) return;
         id = created.id;
         dispatch(CartIdAssigned(id));
         await _persistCartId(id);
@@ -280,42 +331,53 @@ class Store extends Notifier<AppState> {
         qty: qty,
         token: _token,
       );
+      if (!_live(gen)) return;
       dispatch(CartLoadSucceeded(updated));
       _toast('${product.title} added to bag');
     } catch (err) {
+      if (!_live(gen)) return;
       dispatch(CartLoadFailed(_message(err)));
       _toast(_message(err), error: true);
     } finally {
-      dispatch(const CartBusyChanged(false));
+      if (_live(gen)) dispatch(const CartBusyChanged(false));
     }
   }
 
   Future<void> setLineQuantity(String lineId, int qty) async {
     final id = state.cart.cartId;
     if (id == null) return;
+    final gen = _flushGen;
     dispatch(const CartBusyChanged(true));
     try {
+      final Cart updated;
       if (qty <= 0) {
-        dispatch(CartLoadSucceeded(await api.removeFromCart(cartId: id, lineId: lineId, token: _token)));
+        updated = await api.removeFromCart(cartId: id, lineId: lineId, token: _token);
       } else {
-        dispatch(CartLoadSucceeded(await api.updateCartLine(cartId: id, lineId: lineId, qty: qty, token: _token)));
+        updated = await api.updateCartLine(cartId: id, lineId: lineId, qty: qty, token: _token);
       }
+      if (!_live(gen)) return;
+      dispatch(CartLoadSucceeded(updated));
     } catch (err) {
+      if (!_live(gen)) return;
       _toast(_message(err), error: true);
       await refreshCart();
     } finally {
-      dispatch(const CartBusyChanged(false));
+      if (_live(gen)) dispatch(const CartBusyChanged(false));
     }
   }
 
   Future<bool> applyCoupon(String code) async {
     final id = state.cart.cartId;
     if (id == null) return false;
+    final gen = _flushGen;
     try {
-      dispatch(CartLoadSucceeded(await api.applyCoupon(cartId: id, code: code, token: _token)));
+      final cart = await api.applyCoupon(cartId: id, code: code, token: _token);
+      if (!_live(gen)) return false;
+      dispatch(CartLoadSucceeded(cart));
       _toast('Coupon $code applied');
       return true;
     } catch (err) {
+      if (!_live(gen)) return false;
       _toast(_message(err), error: true);
       return false;
     }
@@ -324,8 +386,11 @@ class Store extends Notifier<AppState> {
   Future<void> removeCoupon() async {
     final id = state.cart.cartId;
     if (id == null) return;
+    final gen = _flushGen;
     try {
-      dispatch(CartLoadSucceeded(await api.applyCoupon(cartId: id, code: null, token: _token)));
+      final cart = await api.applyCoupon(cartId: id, code: null, token: _token);
+      if (!_live(gen)) return;
+      dispatch(CartLoadSucceeded(cart));
     } catch (_) {
       /* nothing to clear */
     }
@@ -344,6 +409,7 @@ class Store extends Notifier<AppState> {
       _toast('Your bag is empty', error: true);
       return null;
     }
+    final gen = _flushGen;
     dispatch(const CartBusyChanged(true));
     try {
       final order = await api.placeOrder(
@@ -354,40 +420,54 @@ class Store extends Notifier<AppState> {
         paymentMethod: paymentMethod,
         token: _token,
       );
+      if (!_live(gen)) return null; // signed out mid-checkout: keep the flush
       dispatch(OrderPlaced(order));
       // Start a fresh bag for the next purchase.
       await createFreshCart();
       return order;
     } catch (err) {
+      if (!_live(gen)) return null;
       dispatch(CartLoadFailed(_message(err)));
       _toast(_message(err), error: true);
       return null;
     } finally {
-      dispatch(const CartBusyChanged(false));
+      if (_live(gen)) dispatch(const CartBusyChanged(false));
     }
   }
 
   Future<void> loadOrders() async {
+    final gen = _flushGen;
     try {
-      dispatch(OrdersLoadSucceeded(await api.getOrders(token: _token)));
+      final orders = await api.getOrders(token: _token);
+      if (!_live(gen)) return;
+      dispatch(OrdersLoadSucceeded(orders));
     } catch (err) {
+      if (!_live(gen)) return;
       dispatch(OrdersLoadFailed(_message(err)));
     }
   }
 
   Future<void> loadOrder(String id) async {
+    final gen = _flushGen;
     try {
-      dispatch(OrderDetailSucceeded(await api.getOrder(id, token: _token)));
+      final order = await api.getOrder(id, token: _token);
+      if (!_live(gen)) return;
+      dispatch(OrderDetailSucceeded(order));
     } catch (err) {
+      if (!_live(gen)) return;
       dispatch(OrderDetailFailed(_message(err)));
     }
   }
 
   Future<bool> trackOrder({required String orderNumber, String? email, String? phone}) async {
+    final gen = _flushGen;
     try {
-      dispatch(OrderTrackingSucceeded(await api.trackOrder(orderNumber: orderNumber, email: email, phone: phone)));
+      final order = await api.trackOrder(orderNumber: orderNumber, email: email, phone: phone);
+      if (!_live(gen)) return false;
+      dispatch(OrderTrackingSucceeded(order));
       return true;
     } catch (err) {
+      if (!_live(gen)) return false;
       dispatch(OrderTrackingFailed(_message(err)));
       return false;
     }
@@ -398,9 +478,13 @@ class Store extends Notifier<AppState> {
   Future<void> loadAddresses() async {
     final token = _token;
     if (token == null) return;
+    final gen = _flushGen;
     try {
-      dispatch(AddressesLoadSucceeded(await api.getAddresses(token: token)));
+      final addresses = await api.getAddresses(token: token);
+      if (!_live(gen)) return;
+      dispatch(AddressesLoadSucceeded(addresses));
     } catch (err) {
+      if (!_live(gen)) return;
       dispatch(AddressesLoadFailed(_message(err)));
     }
   }
@@ -411,14 +495,17 @@ class Store extends Notifier<AppState> {
       _toast('Sign in to save an address', error: true);
       return null;
     }
+    final gen = _flushGen;
     try {
       final saved = await api.saveAddress(token: token, id: existing, fields: fields);
+      if (!_live(gen)) return null;
       final current = state.orders.addresses.value ?? const <Address>[];
       final next = [saved, ...current.where((a) => a.id != saved.id)];
       dispatch(AddressesLoadSucceeded(next));
       _toast('Address saved');
       return saved;
     } catch (err) {
+      if (!_live(gen)) return null;
       _toast(_message(err), error: true);
       return null;
     }
@@ -427,11 +514,14 @@ class Store extends Notifier<AppState> {
   Future<void> deleteAddress(String id) async {
     final token = _token;
     if (token == null) return;
+    final gen = _flushGen;
     try {
       await api.deleteAddress(token: token, id: id);
+      if (!_live(gen)) return;
       final current = state.orders.addresses.value ?? const <Address>[];
       dispatch(AddressesLoadSucceeded(current.where((a) => a.id != id).toList()));
     } catch (err) {
+      if (!_live(gen)) return;
       _toast(_message(err), error: true);
     }
   }
@@ -480,9 +570,11 @@ class Store extends Notifier<AppState> {
 
   /// Checkout ETA: best warehouse -> address pin, as an [EtaEstimate] (Table).
   Future<void> loadEta(LatLng destination) async {
+    final gen = _flushGen;
     dispatch(const EtaLoadRequested());
     try {
       final best = await _bestWarehouse(destination);
+      if (!_live(gen)) return; // the address pin died with the flush
       if (best == null) {
         dispatch(const EtaLoadFailed('No warehouse can reach that address'));
         return;
@@ -493,6 +585,7 @@ class Store extends Notifier<AppState> {
         duration: best.duration,
       )));
     } catch (err) {
+      if (!_live(gen)) return;
       dispatch(EtaLoadFailed(_message(err)));
     }
   }
@@ -501,19 +594,22 @@ class Store extends Notifier<AppState> {
   /// so the map can label its origin marker; the polyline itself lives in
   /// `routing.route`.
   Future<({String name, double lat, double lng})?> loadDeliveryRoute(LatLng destination) async {
+    final gen = _flushGen;
     dispatch(const RouteLoadRequested());
     try {
       final best = await _bestWarehouse(destination);
+      if (!_live(gen)) return null; // the address pin died with the flush
       if (best == null) {
         dispatch(const RouteLoadFailed('No warehouse can reach that address'));
         return null;
       }
       final hub = kWarehouses[best.index];
-      dispatch(RouteLoadSucceeded(
-        await api.route([LatLng(hub.lat, hub.lng), destination]),
-      ));
+      final route = await api.route([LatLng(hub.lat, hub.lng), destination]);
+      if (!_live(gen)) return null;
+      dispatch(RouteLoadSucceeded(route));
       return (name: hub.name, lat: hub.lat, lng: hub.lng);
     } catch (err) {
+      if (!_live(gen)) return null;
       dispatch(RouteLoadFailed(_message(err)));
       return null;
     }
@@ -523,9 +619,13 @@ class Store extends Notifier<AppState> {
   /// ticks, so failures only update `routing.match` - never a toast.
   Future<void> matchRiderTrace(List<TracePoint> trace) async {
     if (trace.length < 2) return;
+    final gen = _flushGen;
     try {
-      dispatch(MatchSucceeded(await api.matchTrace(trace)));
+      final match = await api.matchTrace(trace);
+      if (!_live(gen)) return;
+      dispatch(MatchSucceeded(match));
     } catch (err) {
+      if (!_live(gen)) return;
       dispatch(MatchFailed(_message(err)));
     }
   }

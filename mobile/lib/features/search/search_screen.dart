@@ -1,21 +1,23 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/config/app_config.dart';
 import '../../shared/widgets/widgets.dart';
+import '../../state/store.dart';
 
 import '../shop/product_listing.dart';
 
 /// "Search" tab - debounced query field + the shared listing grid.
-class SearchScreen extends StatefulWidget {
+class SearchScreen extends ConsumerStatefulWidget {
   const SearchScreen({super.key});
 
   @override
-  State<SearchScreen> createState() => _SearchScreenState();
+  ConsumerState<SearchScreen> createState() => _SearchScreenState();
 }
 
-class _SearchScreenState extends State<SearchScreen> {
+class _SearchScreenState extends ConsumerState<SearchScreen> {
   final _controller = TextEditingController();
   Timer? _debounce;
   String _query = '';
@@ -44,6 +46,16 @@ class _SearchScreenState extends State<SearchScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // This tab survives a logout (the shell keeps its branches alive), so drop
+    // the previous user's query and its results along with the state flush.
+    ref.listen(storeProvider.select((s) => s.auth.isAuthenticated), (previous, next) {
+      if (previous == true && next == false) {
+        _debounce?.cancel();
+        _controller.clear();
+        if (mounted) setState(() => _query = '');
+      }
+    });
+
     return Scaffold(
       backgroundColor: AppColors.surface,
       appBar: AppBar(

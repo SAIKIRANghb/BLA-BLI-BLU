@@ -48,6 +48,13 @@ class _ProductListingViewState extends ConsumerState<ProductListingView> {
   final _scroll = ScrollController();
   bool _loadingMore = false;
 
+  /// Set once this grid's cache slot has actually existed, so a store flush
+  /// (sign-out resets the whole catalogue) reads as "our slot vanished" rather
+  /// than the normal first build. The tab shell keeps this view alive across a
+  /// logout, so `initState` never runs again and the grid would otherwise sit
+  /// on an eternal skeleton - nothing else ever refetches it.
+  bool _hadSlot = false;
+
   @override
   void initState() {
     super.initState();
@@ -108,6 +115,7 @@ class _ProductListingViewState extends ConsumerState<ProductListingView> {
   @override
   Widget build(BuildContext context) {
     final resource = ref.watch(storeProvider.select((s) => s.catalog.listings[_key]));
+    _healFlushedSlot(resource);
 
     return Column(
       children: [
@@ -133,6 +141,27 @@ class _ProductListingViewState extends ConsumerState<ProductListingView> {
         ),
       ],
     );
+  }
+
+  /// Recovers this grid after a store flush wiped its cache slot.
+  ///
+  /// Never mutates during build: the reload is scheduled for the next frame
+  /// and re-reads the slot first, because a public catalogue response that was
+  /// already in flight when the flush landed may have refilled it - then there
+  /// is nothing left to heal.
+  void _healFlushedSlot(Resource<ProductPage>? resource) {
+    if (resource != null) {
+      _hadSlot = true;
+      return;
+    }
+    if (!_hadSlot) return;
+    _hadSlot = false;
+    _page = 1;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (ref.read(storeProvider).catalog.listings[_key] != null) return;
+      _load(refresh: true);
+    });
   }
 
   Widget _body(Resource<ProductPage>? resource) {
