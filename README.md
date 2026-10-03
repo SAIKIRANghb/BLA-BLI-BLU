@@ -193,11 +193,21 @@ swaps the polyline in when the rider leaves the drawn line.
 Two engines behind one screen, picked by `kUseLocalSeed`:
 
 - **seed / offline** — the original 350 ms ticker walks the rider along the
-  planned hub → pin geometry (simulation, unchanged).
+  planned hub → pin geometry (simulation, engine unchanged).
 - **live / online** — polls `GET /api/tracking/orders/:id` every 2 s and
   projects the real fixes onto the drawn route for a monotone progress;
   periodic/off-route OSRM **Route** reroutes update the polyline and ETA
   (details in the backend section above).
+
+Both engines paint the marker through `RiderGlider`
+(`lib/shared/widgets/rider_glider.dart`): each incoming fix *glides* over the
+interval it arrived on — following the drawn polyline when the fix sits on it,
+a straight line otherwise — so the marker moves continuously instead of
+hopping every tick/poll, and only its own `MarkerLayer` rebuilds per frame
+(the progress bar eases to each new value the same way). Fixes more than
+250 m apart are treated as GPS corrections and jump rather than fly; the
+simulated walks opt out of that guard since their step size scales with
+route length.
 
 ### Data source switch
 
@@ -225,12 +235,13 @@ cd mobile
 flutter pub get
 flutter run                   # device/emulator
 flutter analyze --no-pub      # 0 issues
-flutter test --no-pub         # 59 tests: models, reducer, CachedImage,
+flutter test --no-pub         # 69 tests: models, reducer, CachedImage,
                               # links/routing, pagination, hero autoplay,
                               # cart count (bar + bag tab + add-to-bag),
                               # routing/geo + ETA & rider-trace logic,
                               # rider tracking (route math, DTOs, seed+live
-                              # API contracts), layout smoke
+                              # API contracts), rider marker glider,
+                              # layout smoke
 flutter build web --release --no-pub
 ```
 

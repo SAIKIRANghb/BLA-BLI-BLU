@@ -39,15 +39,24 @@ class RiderDetailScreen extends ConsumerStatefulWidget {
   ConsumerState<RiderDetailScreen> createState() => _RiderDetailScreenState();
 }
 
-class _RiderDetailScreenState extends ConsumerState<RiderDetailScreen> {
+class _RiderDetailScreenState extends ConsumerState<RiderDetailScreen>
+    with SingleTickerProviderStateMixin {
   /// Re-check ETA/geometry every N posted fixes (~10 s at 1 fix/s).
   static const int _etaEveryNFixes = 10;
+
+  /// One fix per second (demo walk and GPS throttle) - also the glide time
+  /// between two fixes, so the marker never hops.
+  static const Duration _fixInterval = Duration(seconds: 1);
 
   final MapController _map = MapController();
   final Random _rng = Random();
 
   /// Store handle captured while mounted - `ref` is unusable in [dispose].
   late final Store _store;
+
+  /// Smooth marker layer - mirrors DeliveryMapScreen: fixes post at 1/s and
+  /// the glider turns them into continuous motion along the route.
+  late final RiderGlider _glider;
 
   DeliveryJob? _job;
   bool _loading = true;
@@ -74,6 +83,7 @@ class _RiderDetailScreenState extends ConsumerState<RiderDetailScreen> {
   void initState() {
     super.initState();
     _store = ref.read(storeProvider.notifier);
+    _glider = RiderGlider(vsync: this);
     _job = widget.job;
     WidgetsBinding.instance.addPostFrameCallback((_) => _resolve());
   }
@@ -82,6 +92,7 @@ class _RiderDetailScreenState extends ConsumerState<RiderDetailScreen> {
   void dispose() {
     _fixTimer?.cancel();
     _gps?.cancel();
+    _glider.dispose();
     _map.dispose();
     // Mirror DeliveryMapScreen: never mutate the store synchronously in
     // dispose - clear the shared tracking slice next tick.
@@ -179,12 +190,26 @@ class _RiderDetailScreenState extends ConsumerState<RiderDetailScreen> {
       locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 5),
     ).listen(
       (position) {
-        if (!_riding || _mode != 'gps') return;
+        if (!mounted || !_riding || _mode != 'gps') return;
         final now = DateTime.now();
-        if (_lastPost != null && now.difference(_lastPost!) < const Duration(seconds: 1)) return;
+        if (_lastPost != null && now.difference(_lastPost!) < _fixInterval) return;
+        // Glide for about the gap the last two fixes had apart: the distance
+        // filter holds fixes back, so the cadence is irregular - matching it
+        // keeps the marker in near-constant motion instead of start-stop.
+        var within = _fixInterval;
+        final last = _lastPost;
+        if (last != null) {
+          final gap = now.difference(last);
+          if (gap > within) within = gap < const Duration(seconds: 3) ? gap : const Duration(seconds: 3);
+        }
         _lastPost = now;
         final fix = LatLng(position.latitude, position.longitude);
-        _store.moveRider(fix, _progressAt(fix));
+        final geometry = ref.read(storeProvider).routing.route.value?.geometry;
+        _store.moveRider(
+          fix,
+          geometry == null || geometry.length < 2 ? 0 : rm.progressAlong(geometry, fix),
+        );
+        _glider.moveTo(fix, within: within, geometry: geometry);
         _submit(
           fix,
           accuracy: position.accuracy.isFinite ? position.accuracy : null,
@@ -220,7 +245,7 @@ class _RiderDetailScreenState extends ConsumerState<RiderDetailScreen> {
       _postError = null;
       _startedAt = DateTime.now();
     });
-    _fixTimer = Timer.periodic(const Duration(seconds: 1), (_) => _demoTick(geometry));
+    _fixTimer = Timer.periodic(_fixInterval, (_) => _demoTick(geometry));
     _demoTick(geometry); // first fix lands at t = 0, hub departure
   }
 
@@ -238,18 +263,17 @@ class _RiderDetailScreenState extends ConsumerState<RiderDetailScreen> {
     final at = rm.pointAt(geometry, t);
     final fix = LatLng(at.latitude + _jitter(), at.longitude + _jitter());
     _store.moveRider(fix, t);
+    // One glide per posted fix: the marker walks the road at the same pace
+    // the demo rides it, so this screen shows continuous motion too.
+    // Demo fixes are generated on the route (gaps scale with route length
+    // over the fixed kDemoRideSeconds) - never corrections, never snap.
+    _glider.moveTo(fix, within: _fixInterval, geometry: geometry, snapBeyond: double.infinity);
     _submit(fix, accuracy: 10 + _rng.nextDouble() * 15);
 
     if (t >= 1) _stop(arrived: true);
   }
 
   double _jitter() => (_rng.nextDouble() - 0.5) * 0.0001; // +-0.00005 deg
-
-  /// Progress off the current geometry (GPS mode); demo mode passes t itself.
-  double _progressAt(LatLng fix) {
-    final geometry = ref.read(storeProvider).routing.route.value?.geometry ?? const <LatLng>[];
-    return geometry.length >= 2 ? rm.progressAlong(geometry, fix) : 0;
-  }
 
   void _stop({bool arrived = false}) {
     _fixTimer?.cancel();
@@ -411,7 +435,6 @@ class _RiderDetailScreenState extends ConsumerState<RiderDetailScreen> {
     final job = _job!;
     final pin = LatLng(job.address.lat!, job.address.lng!);
     final route = routing.route;
-    final rider = routing.rider;
 
     if (route.isError && !route.hasValue) {
       return ErrorRetry(message: route.error, onRetry: _resolve);
@@ -430,7 +453,18 @@ class _RiderDetailScreenState extends ConsumerState<RiderDetailScreen> {
       markers: [
         if (_hub != null) _marker(LatLng(_hub!.lat, _hub!.lng), Icons.warehouse_outlined, AppColors.ink),
         _marker(pin, Icons.location_on, AppColors.primary),
-        if (rider != null) _marker(rider, Icons.delivery_dining, AppColors.primary, filled: true),
+      ],
+      // Own layer per frame (see DeliveryMapScreen): the glider's listener
+      // rebuilds this MarkerLayer only.
+      layers: [
+        ValueListenableBuilder<LatLng?>(
+          valueListenable: _glider,
+          builder: (context, at, _) => MarkerLayer(
+            markers: [
+              if (at != null) _marker(at, Icons.delivery_dining, AppColors.primary, filled: true),
+            ],
+          ),
+        ),
       ],
     );
   }

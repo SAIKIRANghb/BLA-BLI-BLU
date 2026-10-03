@@ -2,6 +2,7 @@
 ///
 /// Everything here works on a bare polyline + cumulative road distances:
 ///  * [pointAt]         - interpolation at fraction t (the ticker's walk)
+///  * [pointAtDistance] - interpolation at metres travelled (the glider's walk)
 ///  * [projectOnRoute]  - nearest point *along* the polyline (rider fix ->
 ///                        route progress + off-route distance)
 ///  * [progressAlong]   - 0..1 fraction of the polyline consumed at a fix
@@ -35,9 +36,27 @@ LatLng pointAt(List<LatLng> geometry, double t) {
   if (geometry.isEmpty) throw ArgumentError('geometry must not be empty');
   if (geometry.length == 1) return geometry.first;
   final cum = cumulativeDistances(geometry);
+  return sampleAtDistance(geometry, cum, cum.last * t.clamp(0.0, 1.0));
+}
+
+/// Point at [metres] from the polyline start (clamped to both ends).
+///
+/// Distance form of [pointAt] - the marker glider thinks in metres travelled
+/// because it interpolates *between two fixes*, not between two fractions.
+LatLng pointAtDistance(List<LatLng> geometry, double metres) {
+  if (geometry.isEmpty) throw ArgumentError('geometry must not be empty');
+  if (geometry.length == 1) return geometry.first;
+  return sampleAtDistance(geometry, cumulativeDistances(geometry), metres);
+}
+
+/// Same as [pointAtDistance] but reusing a [cum] cache from
+/// [cumulativeDistances] - per-frame callers keep one for the whole glide.
+///
+/// Precondition: [geometry] is non-empty and [cum] is its cumulative cache.
+LatLng sampleAtDistance(List<LatLng> geometry, List<double> cum, double metres) {
   final total = cum.last;
   if (total <= 0) return geometry.first;
-  final target = total * t.clamp(0.0, 1.0);
+  final target = metres.clamp(0.0, total);
   var i = 1;
   while (i < cum.length - 1 && cum[i] < target) {
     i++;

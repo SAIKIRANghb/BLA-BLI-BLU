@@ -73,6 +73,31 @@ void main() {
       // Pinned past the end clamps instead of overshooting.
       expect(progressAlong(line, const LatLng(28.61, 77.30)), 1.0);
     });
+
+    test('pointAtDistance walks by metres and agrees with pointAt', () {
+      final total = routeDistance(line);
+
+      expect(pointAtDistance(line, 0), pointAt(line, 0));
+      expect(pointAtDistance(line, total), pointAt(line, 1));
+      expect(pointAtDistance(line, total / 2), pointAt(line, 0.5));
+      // Half the road is past the corner: on the east leg.
+      final mid = pointAtDistance(line, total / 2);
+      expect(mid.latitude, closeTo(28.61, 1e-6));
+      expect(mid.longitude, greaterThan(77.20));
+      expect(mid.longitude, lessThan(77.22));
+
+      // Out-of-range distances clamp to the ends, never extrapolate.
+      expect(pointAtDistance(line, -500), pointAt(line, 0));
+      expect(pointAtDistance(line, total + 500), pointAt(line, 1));
+    });
+
+    test('sampleAtDistance reuses a cumulative cache for the same answers', () {
+      final cum = cumulativeDistances(line);
+
+      expect(sampleAtDistance(line, cum, 0), pointAt(line, 0));
+      expect(sampleAtDistance(line, cum, cum.last), pointAt(line, 1));
+      expect(sampleAtDistance(line, cum, cum[1]), line[1]); // exactly the corner
+    });
   });
 
   // ── DTO parsing ───────────────────────────────────────────────────────────

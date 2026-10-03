@@ -9,8 +9,8 @@ import '../../core/config/app_config.dart';
 /// Wraps flutter_map so the tile source, OSM user agent, attribution and
 /// fallback centre live in one place (see [kOsmTileUrl] and friends). Callers
 /// pass a [controller] when they need camera control, plus overlay
-/// [polylines] / [markers] to decorate the scene; everything else uses the
-/// defaults.
+/// [polylines] / [markers] / [layers] to decorate the scene; everything else
+/// uses the defaults.
 class OsmMap extends StatelessWidget {
   const OsmMap({
     super.key,
@@ -21,6 +21,7 @@ class OsmMap extends StatelessWidget {
     this.onPositionChanged,
     this.polylines = const [],
     this.markers = const [],
+    this.layers = const [],
   });
 
   /// Optional camera handle - screens that fit bounds or move the view.
@@ -44,6 +45,13 @@ class OsmMap extends StatelessWidget {
   /// Markers drawn above the tiles (pin, hubs, rider).
   final List<Marker> markers;
 
+  /// Extra map layers stacked above [markers].
+  ///
+  /// A layer can wrap a [Listenable] so only it rebuilds when the listener
+  /// fires - the rider marker glides through here without disturbing the
+  /// tiles or polylines underneath.
+  final List<Widget> layers;
+
   @override
   Widget build(BuildContext context) {
     return FlutterMap(
@@ -58,6 +66,7 @@ class OsmMap extends StatelessWidget {
         TileLayer(urlTemplate: kOsmTileUrl, userAgentPackageName: kOsmUserAgent),
         PolylineLayer(polylines: polylines),
         MarkerLayer(markers: markers),
+        ...layers,
         // `kOsmAttribution` already carries the © sign.
         RichAttributionWidget(
           attributions: [

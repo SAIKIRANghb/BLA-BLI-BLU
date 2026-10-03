@@ -17,6 +17,11 @@ import '../../state/store.dart';
 
 /// Live courier tracking on OpenStreetMap.
 ///
+/// The rider marker never hops: both engines feed a [RiderGlider] that
+/// interpolates each incoming fix over the interval it arrived on (road-walk
+/// when the fix is on the drawn line, straight line otherwise), and only the
+/// marker's own layer rebuilds per frame.
+///
 /// Two engines behind one screen, picked by [kUseLocalSeed]:
 ///
 ///  * **seed / offline** - [_load] pulls the order, picks the serving hub and
@@ -39,16 +44,21 @@ class DeliveryMapScreen extends ConsumerStatefulWidget {
   ConsumerState<DeliveryMapScreen> createState() => _DeliveryMapScreenState();
 }
 
-class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
-  /// Unrounded haversine - only used for interpolation proportions along the
-  /// route, where Vincenty's iteration cost buys nothing.
-  static const Distance _dist = DistanceHaversine(roundResult: false);
+class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen>
+    with SingleTickerProviderStateMixin {
+  /// Seed ticker cadence - also the glide time between two ticks, so the
+  /// marker moves continuously instead of hopping every 350 ms.
+  static const Duration _seedTick = Duration(milliseconds: 350);
 
   final MapController _map = MapController();
   final Random _rng = Random();
 
   /// Store handle captured while mounted - `ref` is unusable in [dispose].
   late final Store _store;
+
+  /// Smooth marker layer: interpolates every fix (seed tick or live poll)
+  /// into continuous motion along the drawn road.
+  late final RiderGlider _glider;
 
   Timer? _timer;
   int _tick = 0;
@@ -92,12 +102,14 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
   void initState() {
     super.initState();
     _store = ref.read(storeProvider.notifier);
+    _glider = RiderGlider(vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _glider.dispose();
     _map.dispose();
     // Route swaps unmount us mid-build, and mutating the store synchronously
     // inside dispose is exactly what Riverpod forbids - clear next tick.
@@ -125,6 +137,7 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
       _noFix = true;
       _trouble = false;
     });
+    _glider.snap(null); // first fix of this run starts from scratch
     final store = _store;
     await store.loadOrder(widget.orderId);
     if (!mounted) return;
@@ -165,7 +178,7 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
   void _startTicker() {
     _timer?.cancel();
     _baseTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    _timer = Timer.periodic(const Duration(milliseconds: 350), (_) => _onTick());
+    _timer = Timer.periodic(_seedTick, (_) => _onTick());
   }
 
   void _onTick() {
@@ -183,6 +196,10 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
     final at = _pointAt(route.geometry, t);
     final store = _store;
     store.moveRider(at, t);
+    // Glider covers the same 350 ms the tick takes: continuous travel.
+    // Simulation walk - ticks are 2 % of the route by construction, so the
+    // correction guard (snapBeyond) must not fire on long routes.
+    _glider.moveTo(at, within: _seedTick, geometry: route.geometry, snapBeyond: double.infinity);
 
     // GPS-style fix: +-0.0001 deg around the true position, fed to Match.
     _trace.add(TracePoint(
@@ -292,6 +309,10 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
   }
 
   /// Distance model -> monotone 0..1 progress, pushed to the store.
+  ///
+  /// The marker glides to [at] over the poll interval, so a fix every 2 s
+  /// reads as continuous motion along the road (reroute geometry swaps are
+  /// picked up on the next fix).
   void _applyProgress(LatLng at, double remaining, {required String status}) {
     if (status == 'delivered' || status == 'cancelled') {
       _liveProgress = 1;
@@ -300,6 +321,11 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
       if (raw > _liveProgress) _liveProgress = raw; // never rides backwards
     }
     _store.moveRider(at, _liveProgress);
+    _glider.moveTo(
+      at,
+      within: kTrackPollInterval,
+      geometry: ref.read(storeProvider).routing.route.value?.geometry,
+    );
   }
 
   /// Trail -> Match input: last 12 fixes, timestamps forced ascending.
@@ -348,29 +374,13 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
   }
 
   /// Point at fraction [t] (0..1) of the route, by cumulative road distance.
+  /// The cumulative cache is rebuilt only when the geometry identity changes.
   LatLng _pointAt(List<LatLng> geom, double t) {
     if (!identical(_geom, geom)) {
       _geom = geom;
-      _cum = [0.0];
-      for (var i = 1; i < geom.length; i++) {
-        _cum.add(_cum.last + _dist.distance(geom[i - 1], geom[i]));
-      }
+      _cum = rm.cumulativeDistances(geom);
     }
-    final total = _cum.last;
-    if (total <= 0) return geom.first;
-    final target = total * t.clamp(0.0, 1.0);
-    var i = 1;
-    while (i < _cum.length - 1 && _cum[i] < target) {
-      i++;
-    }
-    final span = _cum[i] - _cum[i - 1];
-    final f = span <= 0 ? 0.0 : ((target - _cum[i - 1]) / span).clamp(0.0, 1.0);
-    final a = geom[i - 1];
-    final b = geom[i];
-    return LatLng(
-      a.latitude + (b.latitude - a.latitude) * f,
-      a.longitude + (b.longitude - a.longitude) * f,
-    );
+    return rm.sampleAtDistance(geom, _cum, _cum.last * t.clamp(0.0, 1.0));
   }
 
   @override
@@ -410,7 +420,6 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
     final center = LatLng(address.lat!, address.lng!);
     final route = routing.route.value;
     final match = routing.match.value;
-    final rider = routing.rider;
 
     return Stack(
       children: [
@@ -429,7 +438,18 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
           markers: [
             if (_hub != null) _pin(LatLng(_hub!.lat, _hub!.lng), Icons.warehouse_outlined, AppColors.ink),
             _pin(center, Icons.location_on, AppColors.primary),
-            if (rider != null) _pin(rider, Icons.delivery_dining, AppColors.primary, filled: true),
+          ],
+          // The rider lives in its own layer: every glide frame rebuilds
+          // just this MarkerLayer - tiles and polylines underneath don't.
+          layers: [
+            ValueListenableBuilder<LatLng?>(
+              valueListenable: _glider,
+              builder: (context, at, _) => MarkerLayer(
+                markers: [
+                  if (at != null) _pin(at, Icons.delivery_dining, AppColors.primary, filled: true),
+                ],
+              ),
+            ),
           ],
         ),
         Positioned(left: 16, right: 16, bottom: 18, child: _card(routing)),
@@ -537,13 +557,20 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
           ],
         ),
         const SizedBox(height: 12),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(4),
-          child: LinearProgressIndicator(
-            value: progress,
-            minHeight: 7,
-            color: AppColors.primary,
-            backgroundColor: AppColors.line,
+        // TweenAnimationBuilder eases the bar to each new value - the same
+        // "no jumps" rule the rider marker follows.
+        TweenAnimationBuilder<double>(
+          tween: Tween(begin: 0, end: progress),
+          duration: const Duration(milliseconds: 450),
+          curve: Curves.easeOut,
+          builder: (context, value, _) => ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: value,
+              minHeight: 7,
+              color: AppColors.primary,
+              backgroundColor: AppColors.line,
+            ),
           ),
         ),
         const SizedBox(height: 8),

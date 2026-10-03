@@ -10,5 +10,6 @@ export 'price_text.dart';
 export 'product_card.dart';
 export 'qty_stepper.dart';
 export 'rating_stars.dart';
+export 'rider_glider.dart';
 export 'skeletons.dart';
 export 'toast_listener.dart';
