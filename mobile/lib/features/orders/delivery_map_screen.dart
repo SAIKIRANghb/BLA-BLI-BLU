@@ -8,19 +8,28 @@ import 'package:latlong2/latlong.dart';
 
 import '../../core/config/app_config.dart';
 import '../../core/models/models.dart';
+import '../../core/utils/route_math.dart' as rm;
 import '../../shared/widgets/widgets.dart';
+import '../../state/actions.dart';
 import '../../state/app_state.dart';
 import '../../state/resource.dart';
 import '../../state/store.dart';
 
 /// Live courier tracking on OpenStreetMap.
 ///
-/// [_load] pulls the order, picks the serving hub and loads the warehouse ->
-/// pin road route (OSRM Route via the store). A 350 ms ticker then walks the
-/// rider along that geometry, dispatching `RiderAdvanced` every tick and a
-/// jittered GPS trace through OSRM **Match** every fourth tick - so the map
-/// route, the snapped trace and the bottom card all rebuild straight from
-/// `state.routing`.
+/// Two engines behind one screen, picked by [kUseLocalSeed]:
+///
+///  * **seed / offline** - [_load] pulls the order, picks the serving hub and
+///    loads the warehouse -> pin road route (OSRM Route via the store), then a
+///    350 ms ticker walks the rider along that geometry, dispatching
+///    `RiderAdvanced` every tick and a jittered GPS trace through OSRM
+///    **Match** every fourth tick.
+///  * **live / prod** - no simulation: the screen *polls*
+///    `GET /api/tracking/orders/:id` every [kTrackPollInterval], projects the
+///    rider's real fixes onto the current geometry for a monotone progress,
+///    and periodically re-asks OSRM **Route** (every [kRerouteEveryNPolls]th
+///    poll, or sooner when the rider strays [kRerouteOffRouteMetres] off the
+///    line) so the polyline *and* the ETA follow the rider's actual path.
 class DeliveryMapScreen extends ConsumerStatefulWidget {
   const DeliveryMapScreen({super.key, required this.orderId});
 
@@ -54,6 +63,31 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
   List<LatLng> _geom = const [];
   List<double> _cum = const [];
 
+  // ── live mode (kUseLocalSeed == false) ────────────────────────────────────
+  /// Poll counter (drives the Match/reroute cadences) + consecutive misses.
+  int _poll = 0;
+  int _misses = 0;
+  bool _pollBusy = false;
+
+  /// When the server received the newest fix (staleness display).
+  DateTime? _lastSeen;
+
+  /// Distance model behind the progress bar: [_baseline] metres still to go
+  /// when tracking started, [_remaining] metres estimated now. Progress is
+  /// monotone - a reroute may only move it forward.
+  double _baseline = 0;
+  double _remaining = 0;
+  double _liveProgress = 0;
+
+  /// OSRM-backed remaining seconds + when they were measured (the card ticks
+  /// them down between reroutes instead of guessing off the planned route).
+  double? _etaSeconds;
+  DateTime? _etaAt;
+
+  /// Rider hasn't reported a fix yet / the poll loop is failing repeatedly.
+  bool _noFix = true;
+  bool _trouble = false;
+
   @override
   void initState() {
     super.initState();
@@ -71,7 +105,8 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
     super.dispose();
   }
 
-  /// (Re)fetch the order, then the hub -> pin route, then start the ticker.
+  /// (Re)fetch the order, then the hub -> pin route, then start the engine:
+  /// ticker in seed mode, GPS polling everywhere else.
   Future<void> _load() async {
     _timer?.cancel();
     setState(() {
@@ -79,6 +114,16 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
       _tick = 0;
       _fitted = false;
       _hub = null;
+      _poll = 0;
+      _misses = 0;
+      _lastSeen = null;
+      _baseline = 0;
+      _remaining = 0;
+      _liveProgress = 0;
+      _etaSeconds = null;
+      _etaAt = null;
+      _noFix = true;
+      _trouble = false;
     });
     final store = _store;
     await store.loadOrder(widget.orderId);
@@ -92,7 +137,13 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
     setState(() => _hub = hub);
     if (hub != null) {
       _fitRoute();
-      _startTicker();
+      // Full planned distance: the yardstick progress is measured against.
+      _baseline = ref.read(storeProvider).routing.route.value?.distance ?? 0;
+      if (kUseLocalSeed) {
+        _startTicker();
+      } else {
+        _startPolling();
+      }
     }
   }
 
@@ -146,6 +197,155 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
   }
 
   double _jitter() => (_rng.nextDouble() - 0.5) * 0.0002;
+
+  // ── live mode: poll the rider's real GPS trail ────────────────────────────
+
+  void _startPolling() {
+    _timer?.cancel();
+    _poll = 0;
+    _onPoll(); // first read immediately, then every kTrackPollInterval
+    _timer = Timer.periodic(kTrackPollInterval, (_) => _onPoll());
+  }
+
+  /// One poll: newest trail -> progress (projected on the current geometry),
+  /// Match every 4th read, and a fresh OSRM Route (geometry + ETA) every
+  /// [kRerouteEveryNPolls]th read or as soon as the rider leaves the line.
+  Future<void> _onPoll() async {
+    if (!mounted) {
+      _timer?.cancel();
+      return;
+    }
+    if (_pollBusy) return; // a slow read must not stack on the next tick
+    _pollBusy = true;
+    _poll++;
+    try {
+      final track = await _store.loadRiderTrack(widget.orderId);
+      if (!mounted) return;
+
+      if (track == null) {
+        _misses++;
+        if (_misses >= kTrackMissesBeforeTrouble && !_trouble) {
+          setState(() => _trouble = true);
+        }
+        return;
+      }
+      _misses = 0;
+
+      final fix = track.latest;
+      if (fix == null) {
+        // Rider accepted the job but hasn't reported yet: keep the plan.
+        if (!_noFix) setState(() => _noFix = true);
+        return;
+      }
+
+      // 1) where is the fix on the route we are currently drawing?
+      final geometry = ref.read(storeProvider).routing.route.value?.geometry ?? const <LatLng>[];
+      var remaining = _remaining;
+      var offRoute = 0.0;
+      if (geometry.length >= 2) {
+        final projection = rm.projectOnRoute(geometry, fix.location);
+        remaining = (rm.routeDistance(geometry) - projection.along).clamp(0.0, double.infinity);
+        offRoute = projection.offRoute;
+      }
+
+      // 2) monotone progress + rider marker from the real position.
+      _applyProgress(fix.location, remaining, status: track.status);
+      setState(() {
+        _noFix = false;
+        _trouble = false;
+        _lastSeen = _parseTime(fix.receivedAt) ?? _parseTime(fix.recordedAt) ?? DateTime.now();
+        _remaining = remaining;
+      });
+
+      // 3) snap the raw trail to roads (OSRM Match), every 4th read.
+      if (_poll % 4 == 0 && track.trail.length >= 2) {
+        _store.matchRiderTrace(_traceFromTrail(track.trail));
+      }
+
+      // 4) fresh geometry + ETA from OSRM Route: periodic, off-route, or first.
+      final due = _etaSeconds == null ||
+          _poll % kRerouteEveryNPolls == 0 ||
+          offRoute > kRerouteOffRouteMetres;
+      final pin = _pinFromOrder();
+      if (due && pin != null) {
+        final reroute = await _store.rerouteFrom(fix.location, pin);
+        if (reroute != null && mounted) {
+          if (reroute.distance > _baseline) _baseline = reroute.distance; // started beyond the hub
+          _etaSeconds = reroute.duration;
+          _etaAt = DateTime.now();
+          setState(() => _remaining = reroute.distance);
+          _applyProgress(fix.location, reroute.distance, status: track.status);
+          // Swap the drawn line for the rider's actual path (no loading
+          // flicker: only the success action, a failed reroute keeps the old).
+          _store.dispatch(RouteLoadSucceeded(RouteResult(
+            distance: reroute.distance,
+            duration: reroute.duration,
+            geometry: reroute.geometry,
+          )));
+        }
+      }
+
+      if (track.status == 'delivered' || track.status == 'cancelled') _timer?.cancel();
+    } finally {
+      _pollBusy = false;
+    }
+  }
+
+  /// Distance model -> monotone 0..1 progress, pushed to the store.
+  void _applyProgress(LatLng at, double remaining, {required String status}) {
+    if (status == 'delivered' || status == 'cancelled') {
+      _liveProgress = 1;
+    } else if (_baseline > 0) {
+      final raw = (1 - remaining / _baseline).clamp(0.0, 1.0);
+      if (raw > _liveProgress) _liveProgress = raw; // never rides backwards
+    }
+    _store.moveRider(at, _liveProgress);
+  }
+
+  /// Trail -> Match input: last 12 fixes, timestamps forced ascending.
+  List<TracePoint> _traceFromTrail(List<RiderPosition> trail) {
+    final points = <TracePoint>[];
+    var lastTs = 0;
+    for (final p in trail.length > 12 ? trail.sublist(trail.length - 12) : trail) {
+      final at = _parseTime(p.recordedAt);
+      var ts = at == null ? 0 : at.millisecondsSinceEpoch ~/ 1000;
+      if (ts <= lastTs) ts = lastTs + 1; // OSRM Match needs strict increase
+      lastTs = ts;
+      points.add(TracePoint(location: p.location, timestamp: ts, accuracy: p.accuracyM ?? 30));
+    }
+    return points;
+  }
+
+  LatLng? _pinFromOrder() {
+    final order = ref.read(storeProvider).orders.detail.value;
+    final address = order?.id == widget.orderId ? order!.address : null;
+    if (address == null || !address.hasPin) return null;
+    return LatLng(address.lat!, address.lng!);
+  }
+
+  DateTime? _parseTime(String iso) => iso.isEmpty ? null : DateTime.tryParse(iso)?.toLocal();
+
+  /// OSRM-backed remaining seconds, ticking down between reroute checks.
+  /// `null` = seed mode / first reroute still pending (card falls back to
+  /// the planned route's proportional estimate).
+  double? get _liveEta {
+    final seconds = _etaSeconds;
+    final at = _etaAt;
+    if (seconds == null || at == null) return null;
+    final left = seconds - DateTime.now().difference(at).inSeconds;
+    return left < 0 ? 0 : left;
+  }
+
+  /// 'Last seen Ns ago' once the trail went quiet past [kTrackStaleAfter].
+  String? get _staleLabel {
+    if (kUseLocalSeed || _noFix) return null;
+    final seen = _lastSeen;
+    if (seen == null) return null;
+    final age = DateTime.now().difference(seen);
+    if (age < kTrackStaleAfter) return null;
+    final seconds = age.inSeconds;
+    return seconds < 60 ? 'Last seen ${seconds}s ago' : 'Last seen ${seconds ~/ 60}m ago';
+  }
 
   /// Point at fraction [t] (0..1) of the route, by cumulative road distance.
   LatLng _pointAt(List<LatLng> geom, double t) {
@@ -284,13 +484,21 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
 
   Widget _progress(RoutingSlice routing, RouteResult route) {
     final progress = routing.progress.clamp(0.0, 1.0);
-    final minutes = (route.duration * (1 - progress) / 60).ceil();
+    // Live mode prefers the OSRM-backed remaining time (ticked down since the
+    // last reroute); seed mode keeps the planned-route proportional estimate.
+    final liveEta = _liveEta;
+    final seconds = liveEta ?? route.duration * (1 - progress);
+    final minutes = (seconds / 60).ceil();
     final eta = progress >= 1
         ? 'Arrived'
         : 'Arriving in ~${minutes < 1 ? 1 : minutes} min';
     final status = progress >= 1
         ? 'Delivered'
-        : (routing.rider == null ? 'Rider at the hub' : 'Rider on the way');
+        : (!kUseLocalSeed && _noFix)
+            ? 'Waiting for the rider to start'
+            : (routing.rider == null ? 'Rider at the hub' : 'Rider on the way');
+    final stale = _staleLabel;
+    final remainingLabel = _remaining > 0 ? _remaining : route.distance;
     final match = routing.match;
 
     return Column(
@@ -323,7 +531,7 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text('${(progress * 100).round()}%', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900)),
-                Text(_meters(route.distance), style: const TextStyle(fontSize: 11.5, color: AppColors.muted)),
+                Text(_meters(remainingLabel), style: const TextStyle(fontSize: 11.5, color: AppColors.muted)),
               ],
             ),
           ],
@@ -344,6 +552,25 @@ class _DeliveryMapScreenState extends ConsumerState<DeliveryMapScreen> {
             const Icon(Icons.local_shipping_outlined, size: 14, color: AppColors.muted),
             const SizedBox(width: 6),
             Text(status, style: const TextStyle(fontSize: 12, color: AppColors.muted)),
+            if (stale != null) ...[
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  '· $stale',
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary),
+                ),
+              ),
+            ] else if (_trouble) ...[
+              const SizedBox(width: 6),
+              const Flexible(
+                child: Text(
+                  '· Connection trouble, retrying',
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: AppColors.muted),
+                ),
+              ),
+            ],
             const Spacer(),
             if (match.hasValue)
               Row(

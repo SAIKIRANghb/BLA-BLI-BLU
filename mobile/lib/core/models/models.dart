@@ -1036,6 +1036,119 @@ class EtaEstimate {
   }
 }
 
+// ────────────────────────────────── Tracking ─────────────────────────────────
+// Rider GPS trail + rider queue DTOs for `/api/tracking/*`.
+
+/// One GPS fix reported by a rider device (POST .../position, trail entries).
+class RiderPosition {
+  const RiderPosition({
+    required this.id,
+    required this.orderId,
+    required this.lat,
+    required this.lng,
+    this.accuracyM,
+    this.speedMps,
+    this.headingDeg,
+    this.recordedAt = '',
+    this.receivedAt = '',
+  });
+
+  final String id;
+  final String orderId;
+  final double lat;
+  final double lng;
+  final double? accuracyM;
+  final double? speedMps;
+  final double? headingDeg;
+
+  /// Device clock of the fix (ISO 8601).
+  final String recordedAt;
+
+  /// Server clock of arrival (ISO 8601) - the safer staleness reference.
+  final String receivedAt;
+
+  LatLng get location => LatLng(lat, lng);
+
+  factory RiderPosition.fromJson(Map<String, dynamic> json) => RiderPosition(
+        id: json['id'] as String? ?? '',
+        orderId: json['orderId'] as String? ?? '',
+        lat: (json['lat'] as num).toDouble(),
+        lng: (json['lng'] as num).toDouble(),
+        accuracyM: (json['accuracyM'] as num?)?.toDouble(),
+        speedMps: (json['speedMps'] as num?)?.toDouble(),
+        headingDeg: (json['headingDeg'] as num?)?.toDouble(),
+        recordedAt: json['recordedAt'] as String? ?? '',
+        receivedAt: json['receivedAt'] as String? ?? '',
+      );
+}
+
+/// The customer's read of a live trail: GET /tracking/orders/:id.
+class TrackResult {
+  const TrackResult({
+    required this.orderId,
+    this.orderNumber = '',
+    this.status = '',
+    this.trail = const [],
+    this.updatedAt = '',
+  });
+
+  final String orderId;
+  final String orderNumber;
+  final String status;
+
+  /// Chronological (oldest -> newest) newest-slice of fixes.
+  final List<RiderPosition> trail;
+  final String updatedAt;
+
+  /// Newest fix, or null while the rider hasn't reported yet.
+  RiderPosition? get latest => trail.isEmpty ? null : trail.last;
+
+  factory TrackResult.fromJson(Map<String, dynamic> json) => TrackResult(
+        orderId: json['orderId'] as String? ?? '',
+        orderNumber: json['orderNumber'] as String? ?? '',
+        status: json['status'] as String? ?? '',
+        trail: _asJsonMapList(json['trail']).map(RiderPosition.fromJson).toList(),
+        updatedAt: json['updatedAt'] as String? ?? '',
+      );
+}
+
+/// One job in the rider queue: GET /tracking/deliveries.
+class DeliveryJob {
+  const DeliveryJob({
+    required this.id,
+    required this.orderNumber,
+    required this.status,
+    required this.address,
+    this.placedAt = '',
+    this.lastFix,
+  });
+
+  final String id;
+  final String orderNumber;
+  final String status;
+  final ShippingAddress address;
+  final String placedAt;
+
+  /// The rider's newest fix for this job, when one exists.
+  final RiderPosition? lastFix;
+
+  bool get hasPin => address.hasPin;
+
+  factory DeliveryJob.fromJson(Map<String, dynamic> json) => DeliveryJob(
+        id: json['id'] as String? ?? '',
+        orderNumber: json['orderNumber'] as String? ?? '',
+        status: json['status'] as String? ?? '',
+        address: ShippingAddress.fromJson((json['address'] as Map<String, dynamic>?) ?? const {}),
+        placedAt: json['placedAt'] as String? ?? '',
+        lastFix: json['lastFix'] is Map
+            ? RiderPosition.fromJson((json['lastFix'] as Map).cast<String, dynamic>())
+            : null,
+      );
+}
+
+List<Map<String, dynamic>> _asJsonMapList(dynamic value) =>
+    ((value as List?) ?? const []).map((e) => (e as Map).cast<String, dynamic>()).toList();
+
 // GeoJSON `[lng, lat]` pairs -> [LatLng].
 List<LatLng> _lineFrom(dynamic geometry) {
   final coords = ((geometry as Map?)?['coordinates'] as List?) ?? const [];

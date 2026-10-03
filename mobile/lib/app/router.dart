@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../core/models/models.dart';
 import '../features/account/account_screen.dart';
 import '../features/account/address_picker_screen.dart';
 import '../features/account/addresses_screen.dart';
@@ -27,6 +28,8 @@ import '../features/orders/order_success_screen.dart';
 import '../features/orders/orders_screen.dart';
 import '../features/orders/track_order_screen.dart';
 import '../features/product/product_screen.dart';
+import '../features/rider/rider_detail_screen.dart';
+import '../features/rider/rider_list_screen.dart';
 import '../features/search/search_screen.dart';
 import '../features/shop/collection_screen.dart';
 import '../features/shop/shop_screen.dart';
@@ -148,6 +151,22 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => TrackOrderScreen(initialOrderNumber: state.extra as String?),
       ),
       GoRoute(
+        path: '/rider',
+        parentNavigatorKey: _rootKey,
+        builder: (context, state) => const RiderListScreen(),
+        routes: [
+          // One delivery: route map + device GPS / demo ride fix sender.
+          GoRoute(
+            path: ':id',
+            parentNavigatorKey: _rootKey,
+            builder: (context, state) => RiderDetailScreen(
+              orderId: state.pathParameters['id']!,
+              job: state.extra as DeliveryJob?,
+            ),
+          ),
+        ],
+      ),
+      GoRoute(
         path: '/addresses',
         parentNavigatorKey: _rootKey,
         builder: (context, state) => const AddressesScreen(),
@@ -217,7 +236,7 @@ String? _redirect(Ref ref, GoRouterState state) {
   final location = state.matchedLocation;
   final signedIn = app.auth.isAuthenticated;
 
-  const protected = ['/checkout', '/orders', '/addresses', '/account'];
+  const protected = ['/checkout', '/orders', '/addresses', '/account', '/rider'];
   final needsAuth = protected.any((p) => location == p || location.startsWith('$p/'));
 
   if (needsAuth && !signedIn) {

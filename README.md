@@ -48,9 +48,9 @@ database (useful for quick demos).
 ### Verify
 
 ```bash
-npm run smoke                 # 58 end-to-end checks against a running server
+npm run smoke                 # 72 end-to-end checks against a running server
                               # (needs OSRM up for the routing cases)
-npm test                      # 72 domain unit tests (node --test)
+npm test                      # 101 domain unit tests (node --test)
 ```
 
 ### API notes
@@ -61,6 +61,8 @@ npm test                      # 72 domain unit tests (node --test)
 - Auth: `POST /api/auth/register|login` → `{ accessToken, refreshToken }`,
   then `Authorization: Bearer <token>`.
 - Admin: header `x-api-key` (dev value `blabliblu-admin`) advances order status.
+- Rider: header `x-rider-key` (dev value `blabliblu-rider`, env `RIDER_KEY`)
+  posts GPS fixes and reads the delivery queue (see "Rider GPS tracking").
 - Coupons: `WELCOME10` (10%), `FLAT100` (₹100), `FREESHIP`.
 - Track an order with order number + email/phone: `POST /api/orders/track`.
 - Invalid input → `422 VALIDATION_ERROR` with per-field `details`;
@@ -105,6 +107,44 @@ endpoints return `503` and the Flutter screens fall back gracefully.
 
 ---
 
+## Rider GPS tracking
+
+Real rider positions end to end: the rider screen (or any device) posts GPS
+fixes, the backend keeps a bounded trail per order, and the customer's live
+map polls it. Migration `db/migrations/003_rider_positions.sql` creates
+`rider_positions` (FK `order_id` cascade, index `order_id + recorded_at DESC`,
+7-day prune on insert).
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /api/tracking/orders/:id/position` | `x-rider-key` | append one fix (201; `404` unknown order, `409` terminal order) |
+| `GET /api/tracking/orders/:id` | `Bearer` + ownership | customer trail: `{ orderNumber, status, latest, trail[], updatedAt }` |
+| `GET /api/tracking/deliveries` | `x-rider-key` | rider queue: active orders that carry a map pin |
+
+- Fix body: `{ lat, lng, accuracyM?, speedMps?, headingDeg?, recordedAt? }`;
+  domain limits are `accuracyM ≤ 1000`, `speedMps ≤ 80`, and a device clock at
+  most `300s` ahead of the server.
+- Trail reads clamp `limit` to `2..500` (default 120) and return the newest
+  slice in chronological order; ownership mirrors `GET /api/orders/:id`
+  (account owner or guest email) — anonymous `401`, wrong user `403`.
+- The rider key is `security.riderKey` / `RIDER_KEY` (default
+  `blabliblu-rider`) and ships as `kRiderKey` in the app's `app_config.dart`.
+- The admin `x-api-key` is also accepted on the rider endpoints for curl.
+
+### Live map behaviour (online/prod)
+
+`DeliveryMapScreen` polls the trail every 2 s and, at least every 16 s (or
+whenever the rider strays > 50 m off the drawn line), re-asks OSRM **Route**
+from the rider's current fix to the delivery pin. One call answers both open
+questions: the fresh geometry (the polyline follows the rider's actual path)
+and the remaining duration (the ETA card ticks it down between checks).
+Progress is a monotone distance model — a reroute can only move it forward.
+A trail older than 15 s shows "Last seen Ns ago"; 5 consecutive failed polls
+flip the card to "Connection trouble". The rider screen does the same
+periodic reroute from its own position.
+
+---
+
 ## Mobile (`mobile/`)
 
 Flutter app (Dart 3) — **Riverpod** for DI/async state and a **redux-like**
@@ -123,27 +163,56 @@ filter/sort · Collection listing · Search with recent searches ·
 Product detail (gallery, variants, notes, reviews) · Cart with coupons ·
 Address book + checkout (COD/UPI) with map pin & live ETA · address picker
 (map pin → manual form) · orders, order detail + live delivery map ·
-Sign in / sign up / profile · FAQ · CMS pages.
+Sign in / sign up / profile · FAQ · CMS pages ·
+rider queue (`/rider`) + rider console (`/rider/:id`).
 
-Maps: **flutter_map** (OpenStreetMap tiles, `kOsmUserAgent` set) backs three
+Maps: **flutter_map** (OpenStreetMap tiles, `kOsmUserAgent` set) backs four
 screens — the address picker (`/addresses/pick`, snaps the pin via
 `/routing/nearest`), the checkout ETA card (`/routing/route` → "Delivers in
-~N min"), and the live delivery map (`/order/:id/live` → route polyline +
-map-matched rider trace from `/routing/match`, ticking progress while the app
-is open).
+~N min"), the live delivery map (`/order/:id/live`), and the rider console
+(route + live position).
+
+### Rider console
+
+`Account → Rider queue → /rider` lists the backend's active deliveries
+(`GET /api/tracking/deliveries`); opening one (`/rider/:id`) shows the route
+map, destination and a live ETA, and offers two ways to feed the customer
+map:
+
+- **Use device GPS** — a `geolocator` stream throttled to 1 fix/second,
+  posted straight to `POST /api/tracking/orders/:id/position`.
+- **Demo ride** — walks the loaded OSRM route in `kDemoRideSeconds` (45 s),
+  posting one jittered fix per second (±0.00005°, accuracy 10–25 m). Runs in
+  seed mode too, so the whole pipeline can be demoed offline.
+
+Either engine re-checks the ETA through OSRM **Route** every 10 fixes and
+swaps the polyline in when the rider leaves the drawn line.
+
+### Live delivery map
+
+Two engines behind one screen, picked by `kUseLocalSeed`:
+
+- **seed / offline** — the original 350 ms ticker walks the rider along the
+  planned hub → pin geometry (simulation, unchanged).
+- **live / online** — polls `GET /api/tracking/orders/:id` every 2 s and
+  projects the real fixes onto the drawn route for a monotone progress;
+  periodic/off-route OSRM **Route** reroutes update the polyline and ETA
+  (details in the backend section above).
 
 ### Data source switch
 
 `lib/core/config/app_config.dart`:
 
 ```dart
-const bool kUseLocalSeed = true;   // false → hit kApiHost instead
+const bool kUseLocalSeed = false;  // true → serve everything from the seed asset
+const String kApiHost = 'http://localhost:4000';
 ```
 
-`true` (default) serves everything from `assets/seed/seed.json`
-(regenerate with `npm run seed:mobile` in `backend/`), so the app runs with
-no backend at all. `false` talks to the API (`kApiHost`, Android emulator
-alias `10.0.2.2:4000`).
+`false` (current default) talks to the API (`kApiHost`, Android emulator
+alias `10.0.2.2:4000`). `true` serves everything from
+`assets/seed/seed.json` (regenerate with `npm run seed:mobile` in
+`backend/`), so the app runs with no backend at all — including the ticker
+simulation and the rider demo ride.
 
 Images: `CachedImage` (`lib/shared/widgets/cached_image.dart`) — in-house
 session LRU + memory cache with pulse placeholder and fade-in, no plugin
@@ -156,13 +225,18 @@ cd mobile
 flutter pub get
 flutter run                   # device/emulator
 flutter analyze --no-pub      # 0 issues
-flutter test --no-pub         # 43 tests: models, reducer, CachedImage,
+flutter test --no-pub         # 59 tests: models, reducer, CachedImage,
                               # links/routing, pagination, hero autoplay,
                               # cart count (bar + bag tab + add-to-bag),
                               # routing/geo + ETA & rider-trace logic,
-                              # layout smoke
+                              # rider tracking (route math, DTOs, seed+live
+                              # API contracts), layout smoke
 flutter build web --release --no-pub
 ```
+
+Widget tests pump `test/seed_app.dart` (`seedApp()`), which overrides
+`apiProvider` with `SeedApi` — the suite never opens a socket whatever
+`kUseLocalSeed` says.
 
 `test/layout_smoke_test.dart` walks every route at 390×844 and 653×891 and
 fails on any rendering exception (RenderFlex overflow etc.). It is
@@ -199,5 +273,12 @@ deliberately golden-free so it passes on any machine.
 # terminal 1
 cd backend && npm run db:setup && npm start
 # terminal 2
-cd mobile  && flutter run        # kUseLocalSeed = true → no backend needed
+cd mobile  && flutter run        # kUseLocalSeed = false → needs terminal 1
 ```
+
+Follow a delivery live (both sessions signed in as the same account):
+
+1. Place an order through checkout with a map pin (Okhla/CP area).
+2. Open `Account → Rider queue →` the order → **Demo ride**.
+3. Open the order detail → live map: it polls the posted fixes, follows the
+   rider and re-asks OSRM for the route + ETA as the ride progresses.

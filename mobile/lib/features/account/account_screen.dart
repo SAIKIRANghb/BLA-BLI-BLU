@@ -133,6 +133,13 @@ class _AccountScreenState extends ConsumerState<AccountScreen> {
                 onTap: () => context.push('/track'),
               ),
               _Tile(
+                icon: Icons.delivery_dining_outlined,
+                title: 'Rider queue',
+                subtitle: 'Send live GPS for active deliveries',
+                trailing: Icons.chevron_right_rounded,
+                onTap: () => context.push('/rider'),
+              ),
+              _Tile(
                 icon: Icons.help_outline_rounded,
                 title: 'FAQs & support',
                 subtitle: 'Shipping, returns and product care',

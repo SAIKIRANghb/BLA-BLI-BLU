@@ -1,9 +1,9 @@
 import 'package:blabliblu/features/home/home_screen.dart';
-import 'package:blabliblu/main.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'seed_app.dart';
 
 /// Regression coverage for the hero autoplay.
 ///
@@ -14,7 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 void main() {
   testWidgets('the hero carousel advances on its own', (tester) async {
     SharedPreferences.setMockInitialValues({});
-    await tester.pumpWidget(const ProviderScope(child: BlablibluApp()));
+    await tester.pumpWidget(seedApp());
     await _settle(tester);
 
     final pageView = tester.widget<PageView>(

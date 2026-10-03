@@ -4,11 +4,12 @@ import 'package:blabliblu/features/auth/sign_in_screen.dart';
 import 'package:blabliblu/features/home/home_screen.dart';
 import 'package:blabliblu/features/product/product_screen.dart';
 import 'package:blabliblu/features/shop/collection_screen.dart';
-import 'package:blabliblu/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'seed_app.dart';
 
 /// Regression coverage for the scraped-content links: the storefront speaks
 /// Shopify's plural vocabulary (`/collections/x`, `/products/x`) which used to
@@ -57,7 +58,7 @@ void main() {
 
   testWidgets('a scraped /collections tile opens its collection screen', (tester) async {
     SharedPreferences.setMockInitialValues({});
-    await tester.pumpWidget(const ProviderScope(child: BlablibluApp()));
+    await tester.pumpWidget(seedApp());
     await _settle(tester);
 
     final context = tester.element(find.byType(NavigationBar));
@@ -77,7 +78,7 @@ void main() {
 
   testWidgets('a scraped /products tile opens the product screen', (tester) async {
     SharedPreferences.setMockInitialValues({});
-    await tester.pumpWidget(const ProviderScope(child: BlablibluApp()));
+    await tester.pumpWidget(seedApp());
     await _settle(tester);
 
     final context = tester.element(find.byType(NavigationBar));
@@ -90,7 +91,7 @@ void main() {
 
   testWidgets('the sign-in back arrow escapes a redirected screen', (tester) async {
     SharedPreferences.setMockInitialValues({});
-    await tester.pumpWidget(const ProviderScope(child: BlablibluApp()));
+    await tester.pumpWidget(seedApp());
     await _settle(tester);
 
     final container = ProviderScope.containerOf(tester.element(find.byType(NavigationBar)));

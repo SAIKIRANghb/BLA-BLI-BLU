@@ -2,8 +2,8 @@
  * smoke.js - end-to-end check of the public API surface against a running
  * server (`npm start` in another terminal), then `npm run smoke`.
  *
- * Exercises: catalogue, content, auth, cart, coupons, checkout, tracking,
- * addresses, admin fulfilment and the six OSRM routing services (set
+ * Exercises: catalogue, content, auth, cart, coupons, checkout, rider GPS
+ * tracking, addresses, admin fulfilment and the six OSRM routing services (set
  * SMOKE_SKIP_ROUTING=1 when the local OSRM engine is not running).
  */
 const BASE = process.env.API_BASE ?? 'http://localhost:4000/api';
@@ -120,6 +120,30 @@ async function main() {
   await call('track with wrong email', () => get(`/orders/track?orderNumber=${orderNumber}&email=other@example.com`), [403]);
   await call('admin advance status', () => patch(`/admin/orders/${orderId}/status`, { status: 'confirmed' }, { headers: { 'x-api-key': 'blabliblu-admin' } }));
   await call('admin without key rejected', () => patch(`/admin/orders/${orderId}/status`, { status: 'shipped' }), [403]);
+
+  // ---- rider tracking ---------------------------------------------------
+  const rider = { 'x-rider-key': 'blabliblu-rider' };
+  const fix = (lat, lng, recordedAt) => ({ lat, lng, accuracyM: 7, speedMps: 4.5, headingDeg: 180, recordedAt });
+  await call('rider posts position', () => post(`/tracking/orders/${orderId}/position`, fix(28.6139, 77.209, new Date(Date.now() - 4000).toISOString()), { headers: rider }), [201]);
+  await call('rider posts second position', () => post(`/tracking/orders/${orderId}/position`, fix(28.6145, 77.2095), { headers: rider }), [201]);
+  await call('rider position without key rejected', () => post(`/tracking/orders/${orderId}/position`, fix(28.615, 77.21)), [403]);
+  await call('rider position with wrong key rejected', () => post(`/tracking/orders/${orderId}/position`, fix(28.615, 77.21), { headers: { 'x-rider-key': 'nope' } }), [403]);
+  await call('rider position rejects out-of-range lat', () => post(`/tracking/orders/${orderId}/position`, fix(91, 77.21), { headers: rider }), [422]);
+  await call('rider position for unknown order 404s', () => post('/tracking/orders/00000000-0000-0000-0000-000000000099/position', fix(28.6, 77.2), { headers: rider }), [404]);
+  const live = await call('order owner reads the live trail', () => get(`/tracking/orders/${orderId}`, { headers: auth }));
+  const trailOk = (live?.data?.trail?.length ?? 0) >= 2 && Math.abs(live?.data?.latest?.lat - 28.6145) < 1e-9;
+  if (!trailOk) failures += 1;
+  results.push(`${trailOk ? 'PASS' : 'FAIL'} 200 trail is chronological and newest-first :: points=${live?.data?.trail?.length} latestLat=${live?.data?.latest?.lat}`);
+  console.log(results[results.length - 1]);
+  await call('trail without token rejected', () => get(`/tracking/orders/${orderId}`), [401]);
+  await call('trail with wrong user rejected', () => get(`/tracking/orders/${orderId}`, { headers: { authorization: 'Bearer not-a-token' } }), [401]);
+  await call('trail for unknown order 404s', () => get('/tracking/orders/00000000-0000-0000-0000-000000000099', { headers: auth }), [404]);
+  const queue = await call('rider lists active deliveries', () => get('/tracking/deliveries', { headers: rider }));
+  const queueOk = Array.isArray(queue?.data?.items) && queue.data.items.some((d) => d.id === orderId);
+  if (!queueOk) failures += 1;
+  results.push(`${queueOk ? 'PASS' : 'FAIL'} 200 rider queue contains the live order :: items=${queue?.data?.items?.length}`);
+  console.log(results[results.length - 1]);
+  await call('rider queue without key rejected', () => get('/tracking/deliveries'), [403]);
 
   // ---- cart merge ------------------------------------------------------
   const guestCart = await call('guest cart', () => post('/carts', {}));

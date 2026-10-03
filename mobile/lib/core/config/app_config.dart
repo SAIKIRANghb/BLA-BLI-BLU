@@ -13,17 +13,45 @@ import 'package:flutter/material.dart';
 /// ── TEST SWITCH ─────────────────────────────────────────────────────────────
 /// Keep `true` while testing the UI without a running backend.
 /// Set to `false` to talk to the Node.js/PostgreSQL API.
-const bool kUseLocalSeed = true;
+const bool kUseLocalSeed = false;
 
 /// ── API endpoint ────────────────────────────────────────────────────────────
-/// * Android emulator -> `10.0.2.2` is the host machine loopback
+/// * Chrome / desktop  -> `localhost` (the host machine loopback)
+/// * Android emulator  -> `10.0.2.2` is the host machine loopback
 /// * iOS simulator     -> `localhost` / `127.0.0.1`
 /// * Physical device   -> your machine's LAN IP, e.g. `192.168.1.10:4000`
-const String kApiHost = 'http://10.0.2.2:4000';
+const String kApiHost = 'http://localhost:4000';
 const String kApiBaseUrl = '$kApiHost/api';
 
 /// Seed asset used when [kUseLocalSeed] is enabled.
 const String kSeedAsset = 'assets/seed/seed.json';
+
+/// ── RIDER TRACKING ──────────────────────────────────────────────────────────
+/// Shared key the rider screens send as `x-rider-key` when posting GPS fixes
+/// to `/api/tracking/*` (the backend's `security.riderKey` / `RIDER_KEY`).
+/// A demo stand-in for a real rider login - keep in sync with the server env.
+const String kRiderKey = 'blabliblu-rider';
+
+/// Customer-side tracking poll cadence (live mode only).
+const Duration kTrackPollInterval = Duration(seconds: 2);
+
+/// Refresh the rider -> pin OSRM route this often (live mode): every Nth poll,
+/// so the polyline and the ETA follow the rider's actual path, not the plan.
+const int kRerouteEveryNPolls = 8; // 8 x 2 s = 16 s
+
+/// Reroute immediately when the rider strays further than this from the
+/// currently displayed geometry (metres) - the road network may have changed.
+const double kRerouteOffRouteMetres = 50;
+
+/// A trail this old (no fix received within the window) is shown as stale.
+const Duration kTrackStaleAfter = Duration(seconds: 15);
+
+/// Consecutive failed polls before the card admits the connection is troubled.
+const int kTrackMissesBeforeTrouble = 5;
+
+/// Demo ride: walk the whole OSRM route posting 1 fix per second, so a full
+/// delivery takes this many seconds regardless of real road distance.
+const int kDemoRideSeconds = 45;
 
 /// ── MAP / ROUTING ───────────────────────────────────────────────────────────
 /// OpenStreetMap raster tiles. `flutter_map` needs a user-agent package name

@@ -77,6 +77,19 @@ abstract class AppApi {
   Future<MatchResult> matchTrace(List<TracePoint> points);
   Future<TripResult> trip(List<LatLng> points, {bool roundtrip = true, String source = 'any', String destination = 'any'});
   Future<Uint8List> vectorTile(int z, int x, int y);
+
+  // tracking (rider GPS trail + rider queue)
+  Future<RiderPosition> reportRiderPosition({
+    required String orderId,
+    required double lat,
+    required double lng,
+    double? accuracyM,
+    double? speedMps,
+    double? headingDeg,
+    DateTime? recordedAt,
+  });
+  Future<TrackResult> getOrderTrack(String orderId, {String? token, int limit = 120});
+  Future<List<DeliveryJob>> getActiveDeliveries({int limit = 20});
 }
 
 /// Raised for any transport / protocol failure. [statusCode] is 0 for offline.
@@ -113,11 +126,11 @@ class LiveApi implements AppApi {
 
   // ── private reusable verbs ────────────────────────────────────────────────
 
-  Future<_Envelope> _get(String path, {Map<String, String>? query, String? token}) =>
-      _send('GET', path, query: query, token: token);
+  Future<_Envelope> _get(String path, {Map<String, String>? query, String? token, Map<String, String>? headers}) =>
+      _send('GET', path, query: query, token: token, headers: headers);
 
-  Future<_Envelope> _post(String path, {Object? body, String? token}) =>
-      _send('POST', path, body: body, token: token);
+  Future<_Envelope> _post(String path, {Object? body, String? token, Map<String, String>? headers}) =>
+      _send('POST', path, body: body, token: token, headers: headers);
 
   Future<_Envelope> _put(String path, {Object? body, String? token}) =>
       _send('PUT', path, body: body, token: token);
@@ -154,15 +167,17 @@ class LiveApi implements AppApi {
     Map<String, String>? query,
     Object? body,
     String? token,
+    Map<String, String>? headers,
   }) async {
     final uri = Uri.parse('$_baseUrl$path').replace(queryParameters: query == null ? null : _clean(query));
-    final headers = <String, String>{
+    final allHeaders = <String, String>{
       'content-type': 'application/json',
       if (token != null && token.isNotEmpty) 'authorization': 'Bearer $token',
+      ...?headers,
     };
 
     final request = http.Request(method, uri)
-      ..headers.addAll(headers)
+      ..headers.addAll(allHeaders)
       ..body = body == null ? '' : jsonEncode(body);
 
     http.Response response;
@@ -401,6 +416,49 @@ class LiveApi implements AppApi {
 
   @override
   Future<Uint8List> vectorTile(int z, int x, int y) => _getBytes('/routing/tile/$z/$x/$y');
+
+  // ── tracking (rider GPS trail) ───────────────────────────────────────────
+
+  static const Map<String, String> _riderKey = {'x-rider-key': kRiderKey};
+
+  @override
+  Future<RiderPosition> reportRiderPosition({
+    required String orderId,
+    required double lat,
+    required double lng,
+    double? accuracyM,
+    double? speedMps,
+    double? headingDeg,
+    DateTime? recordedAt,
+  }) async =>
+      RiderPosition.fromJson(
+        (await _post(
+          '/tracking/orders/$orderId/position',
+          headers: _riderKey,
+          body: {
+            'lat': lat,
+            'lng': lng,
+            if (accuracyM != null) 'accuracyM': accuracyM,
+            if (speedMps != null) 'speedMps': speedMps,
+            if (headingDeg != null) 'headingDeg': headingDeg,
+            if (recordedAt != null) 'recordedAt': recordedAt.toUtc().toIso8601String(),
+          },
+        ))
+            .data as Map<String, dynamic>,
+      );
+
+  @override
+  Future<TrackResult> getOrderTrack(String orderId, {String? token, int limit = 120}) async =>
+      TrackResult.fromJson(
+        (await _get('/tracking/orders/$orderId', token: token, query: {'limit': '$limit'}))
+            .data as Map<String, dynamic>,
+      );
+
+  @override
+  Future<List<DeliveryJob>> getActiveDeliveries({int limit = 20}) async =>
+      _asJsonList(
+        ((await _get('/tracking/deliveries', headers: _riderKey, query: {'limit': '$limit'})).data as Map)['items'],
+      ).map(DeliveryJob.fromJson).toList();
 
   void dispose() => _client.close();
 }
@@ -1039,6 +1097,81 @@ class SeedApi implements AppApi {
       metres += _roadMetres(path[i - 1], path[i]);
     }
     return TripResult(distance: metres, duration: _seconds(metres), geometry: _straight(path));
+  }
+
+  // ── tracking (in-memory trail) ───────────────────────────────────────────
+  //
+  // The seed keeps the tracking contract alive offline: fixes posted by the
+  // rider screen land in [_tracks], the customer read hands them back, and
+  // the queue projects active in-session orders that carry a map pin.
+
+  final Map<String, List<RiderPosition>> _tracks = {};
+
+  static const Set<String> _terminalStatuses = {'delivered', 'cancelled'};
+
+  @override
+  Future<RiderPosition> reportRiderPosition({
+    required String orderId,
+    required double lat,
+    required double lng,
+    double? accuracyM,
+    double? speedMps,
+    double? headingDeg,
+    DateTime? recordedAt,
+  }) =>
+      _write(() {
+        final order = _orders[orderId];
+        if (order == null) throw ApiException('Order not found', statusCode: 404, code: 'NOT_FOUND');
+        if (_terminalStatuses.contains(order.status)) {
+          throw ApiException('Order is ${order.status} - no longer tracking', statusCode: 409, code: 'CONFLICT');
+        }
+        final now = DateTime.now();
+        final position = RiderPosition(
+          id: _uuid(),
+          orderId: orderId,
+          lat: lat,
+          lng: lng,
+          accuracyM: accuracyM,
+          speedMps: speedMps,
+          headingDeg: headingDeg,
+          recordedAt: (recordedAt ?? now).toIso8601String(),
+          receivedAt: now.toIso8601String(),
+        );
+        (_tracks[orderId] ??= []).add(position);
+        return position;
+      });
+
+  @override
+  Future<TrackResult> getOrderTrack(String orderId, {String? token, int limit = 120}) async {
+    final order = _orders[orderId];
+    if (order == null) throw ApiException('Order not found', statusCode: 404, code: 'NOT_FOUND');
+    final all = _tracks[orderId] ?? const <RiderPosition>[];
+    final trail = all.length > limit ? all.sublist(all.length - limit) : [...all];
+    return TrackResult(
+      orderId: orderId,
+      orderNumber: order.orderNumber,
+      status: order.status,
+      trail: trail,
+      updatedAt: trail.isEmpty ? '' : trail.last.recordedAt,
+    );
+  }
+
+  @override
+  Future<List<DeliveryJob>> getActiveDeliveries({int limit = 20}) async {
+    await _ensureLoaded();
+    final jobs = [
+      for (final order in _orders.values)
+        if (!_terminalStatuses.contains(order.status) && order.address.hasPin)
+          DeliveryJob(
+            id: order.id,
+            orderNumber: order.orderNumber,
+            status: order.status,
+            address: order.address,
+            placedAt: order.createdAt,
+            lastFix: (_tracks[order.id] ?? const <RiderPosition>[]).lastOrNull,
+          ),
+    ];
+    return jobs.take(limit).toList();
   }
 
   @override

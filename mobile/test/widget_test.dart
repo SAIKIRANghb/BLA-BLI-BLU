@@ -1,6 +1,5 @@
 import 'package:blabliblu/core/models/models.dart';
 import 'package:blabliblu/features/home/home_screen.dart';
-import 'package:blabliblu/main.dart';
 import 'package:blabliblu/shared/widgets/widgets.dart';
 import 'package:blabliblu/state/actions.dart';
 import 'package:blabliblu/state/store.dart';
@@ -8,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'seed_app.dart';
 
 void main() {
   group('shared widgets', () {
@@ -67,7 +68,7 @@ void main() {
     // Seed mode (`kUseLocalSeed`) + an empty session = no backend required.
     SharedPreferences.setMockInitialValues({});
 
-    await tester.pumpWidget(const ProviderScope(child: BlablibluApp()));
+    await tester.pumpWidget(seedApp());
 
     // Let bootstrap (prefs restore + seed hydration) land before asserting.
     for (var i = 0; i < 10; i++) {
@@ -82,7 +83,7 @@ void main() {
   testWidgets('the cart count rides on both the Bag tab and the header cart', (tester) async {
     SharedPreferences.setMockInitialValues({});
 
-    await tester.pumpWidget(const ProviderScope(child: BlablibluApp()));
+    await tester.pumpWidget(seedApp());
     for (var i = 0; i < 10; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }

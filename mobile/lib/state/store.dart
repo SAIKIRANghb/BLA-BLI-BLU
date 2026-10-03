@@ -536,6 +536,70 @@ class Store extends Notifier<AppState> {
   /// Leaves a clean tracking slice behind when the map screen closes.
   void resetTracking() => dispatch(const TrackingReset());
 
+  // ── tracking (rider GPS + customer trail) ─────────────────────────────────
+
+  /// Customer poll: newest slice of the rider's trail. Return-only - the
+  /// screen owns staleness/miss handling, so a failed poll never toasts.
+  Future<TrackResult?> loadRiderTrack(String orderId, {int limit = 120}) async {
+    try {
+      return await api.getOrderTrack(orderId, token: _token, limit: limit);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Rider queue: active deliveries with map pins (rider key, no session).
+  /// `null` = the read failed (the screen decides how to say so).
+  Future<List<DeliveryJob>?> activeDeliveries({int limit = 20}) async {
+    try {
+      return await api.getActiveDeliveries(limit: limit);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// One GPS fix from the rider device. Returns an error message, or null on
+  /// success - the rider screen surfaces it inline (no toast spam per fix).
+  Future<String?> reportRiderFix({
+    required String orderId,
+    required double lat,
+    required double lng,
+    double? accuracyM,
+    double? speedMps,
+    double? headingDeg,
+    DateTime? recordedAt,
+  }) async {
+    try {
+      await api.reportRiderPosition(
+        orderId: orderId,
+        lat: lat,
+        lng: lng,
+        accuracyM: accuracyM,
+        speedMps: speedMps,
+        headingDeg: headingDeg,
+        recordedAt: recordedAt,
+      );
+      return null;
+    } catch (err) {
+      return _message(err);
+    }
+  }
+
+  /// Periodic ETA + reroute check: one OSRM **Route** call from [from] to
+  /// [to] answers both questions at once - remaining travel time (the ETA)
+  /// and the road geometry the rider should actually follow now. `null` when
+  /// the engine can't reach the pair; callers fall back to the proportional
+  /// estimate off the last known route.
+  Future<({double duration, double distance, List<LatLng> geometry})?> rerouteFrom(LatLng from, LatLng to) async {
+    try {
+      final route = await api.route([from, to]);
+      if (route.geometry.length < 2) return null;
+      return (duration: route.duration, distance: route.distance, geometry: route.geometry);
+    } catch (_) {
+      return null;
+    }
+  }
+
   // ── misc ui ───────────────────────────────────────────────────────────────
 
   void clearToast() => dispatch(const ToastCleared());

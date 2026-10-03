@@ -1,4 +1,5 @@
 import 'package:blabliblu/core/models/models.dart';
+import 'package:blabliblu/core/network/api_client.dart';
 import 'package:blabliblu/state/actions.dart';
 import 'package:blabliblu/state/resource.dart';
 import 'package:blabliblu/state/store.dart';
@@ -16,7 +17,9 @@ void main() {
 
   test('every fetched page accumulates into one query slot', () async {
     SharedPreferences.setMockInitialValues({});
-    final container = ProviderContainer();
+    // Production boots live; the test container reads the same apiProvider,
+    // so pin it to the offline seed.
+    final container = ProviderContainer(overrides: [apiProvider.overrideWithValue(SeedApi())]);
     addTearDown(container.dispose);
     final store = container.read(storeProvider.notifier);
     final key = listingKey();

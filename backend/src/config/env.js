@@ -42,6 +42,9 @@ export function loadEnv(source = process.env) {
       refreshTtl: source.JWT_REFRESH_TTL ?? '30d',
       bcryptRounds: int(source.BCRYPT_ROUNDS, 10),
       adminKey: source.ADMIN_KEY ?? 'blabliblu-admin',
+      // Shared key the rider screen posts GPS fixes with (demo stand-in for
+      // a real rider login - see tracking presentation's requireRider).
+      riderKey: source.RIDER_KEY ?? 'blabliblu-rider',
     },
     commerce: {
       freeShippingThresholdPaise: int(source.FREE_SHIPPING_THRESHOLD_PAISE, 39900),

@@ -1,9 +1,10 @@
 import 'package:blabliblu/app/router.dart';
-import 'package:blabliblu/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'seed_app.dart';
 
 /// Layout smoke sweep: walks every screen of the app on a phone-sized and a
 /// foldable-sized viewport and fails if the framework recorded any rendering
@@ -42,7 +43,7 @@ void main() {
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
 
-      await tester.pumpWidget(const ProviderScope(child: BlablibluApp()));
+      await tester.pumpWidget(seedApp());
       await _settle(tester);
       expectNoErrors(tester, 'boot');
 

@@ -11,6 +11,7 @@ import { createIdentityRouter } from './modules/identity/presentation/identity-r
 import { createCartRouter } from './modules/cart/presentation/cart-routes.js';
 import { createOrderRouter } from './modules/ordering/presentation/order-routes.js';
 import { createRoutingRouter } from './modules/routing/presentation/routing-routes.js';
+import { createTrackingRouter } from './modules/tracking/presentation/tracking-routes.js';
 import { TokenService } from './shared/infrastructure/security.js';
 
 /**
@@ -54,6 +55,8 @@ export function createApp(overrides = {}) {
   app.use('/api', createOrderRouter({ tokens, eventBus, ...(overrides.order ?? {}) }));
   // OpenStreetMap / OSRM: nearest, route, table, match, trip, tile.
   app.use('/api', createRoutingRouter(overrides.routing ?? {}));
+  // Rider GPS trail: report a fix (rider key), read the trail (order owner).
+  app.use('/api', createTrackingRouter({ tokens, ...(overrides.tracking ?? {}) }));
 
   // ---- cross-cutting listeners (Observer) ------------------------------
   registerDomainListeners(eventBus, logger);
